@@ -2,7 +2,7 @@
 
 > Kotlin/Native 的 WebSocket（RFC 6455）协议库，建在 `com.netonstream:io` 之上。
 > 坐标 `com.netonstream:websocket`，包 `neton.websocket`。仓库 `websocket`。
-> 状态：草案 v0（2026-09-27，待评审；评审通过前不写代码）。
+> 状态：草案 v1（2026-09-27，按 GPT 评审修订：写侧背压不阻塞读侧、帧的接受与所有权、零拷贝与缓冲池的关系；待评审）。
 
 ## 0. 依据与范围
 
@@ -190,13 +190,20 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
   - 回复槽位只在为空或为 Pong 时被替换，因此待发的 Close 回复优先，新的 pong 覆盖旧的。
   - 用户发送的 Pong 同样经过该槽位。
   - 我方发出 Close 后不再回 pong。
-- **读路径也会写**：
-  - 参考的做法：`read` 先 flush 待发的回复；遇到 WouldBlock 就记下 `unflushedAdditional` 并继续读，写与读由两个 waker 代理协调（`TT/src/compat.rs:21-121`）。
-  - 本库的并发模型（neton-io §28.6：每个流同一时刻至多一个读、一个写）：
-    - 一个 `WebSocket` 内部有且只有一条写通道。
-    - 读协程产生的自动回复放入回复槽位；写通道空闲时由读协程直接写出，写通道忙时由正在写的一方在本次写完后顺带写出。
-    - 不另起协程，不经过调度对象，与"读路径也会写"在参考中的语义一致。
-    - 这一点以测试证明：参考的 `auto_pong_flush.rs` 移植后，覆盖写通道被占、回复延后写出的情形。
+- **读路径也会写，且写侧背压不得阻塞读侧推进**：
+  - 参考的做法：`read` 先尝试 flush 待发的回复；遇到 WouldBlock 就记下 `unflushedAdditional` 并**继续读**，写与读由两个 waker 代理协调（`TT/src/compat.rs:21-121`）。
+    所以对端暂时不读、却持续发送时，参考仍在消费入站数据。
+  - 草案 v0 规定"写通道空闲时由读协程直接写出"。这会在对端不读时让读协程停在写操作上、不再消费入站数据，与参考不等价，**撤回**。
+  - 本库：每个 `WebSocket` 有一个**写驱动**（连接作用域内的一个协程），独占流的写方向（与 neton-io §28.6"每个流同一时刻至多一个写"一致）。
+    - 读协程产生的自动回复只放入回复槽位（槽位规则见上，至多一个待发回复），唤醒写驱动后立即继续读，**从不等待写出**。
+    - 用户的 `feed` / `send` 把帧放入连接级输出缓冲（§6"帧的接受与所有权"），由写驱动写出。
+    - 写驱动的待发数据有界：输出缓冲 ≤ `maxWriteBufferSize`，外加至多一个回复。
+  - 对端既不读也不停发时，读侧的推进只受入站上限约束（`maxFrameSize` / `maxMessageSize` / 读缓冲），不受出站背压约束；回复槽位被新 Pong 覆盖（同参考），不会无限堆积。
+  - **测试**（双向背压）：
+    - 对端不读、持续发送 Ping：本端的 `receive` 持续返回 Ping，回复槽位只保留最新一个 Pong。
+    - 对端不读时本端 `close`：Close 帧在槽位中优先，读侧继续推进直到收到对端 Close 或 EOF。
+    - 以上情形下取消 `receive` / `send`：连接状态一致，后续操作正常，或按 §6 关闭。
+    - 移植的参考 `auto_pong_flush.rs`。
 - **flush 语义** ✅：`write`（本库 `feed`）只缓冲，`flush` 写出并 flush 流，`send` = `feed` + `flush`。
 
 ## 6. 协程 API 与 neton.io 映射
@@ -206,13 +213,26 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
   - `suspend fun send(message)`、`suspend fun feed(message)`、`suspend fun flush()`、`fun trySend(message): Boolean`。
   - `suspend fun close(frame: CloseFrame? = null)`。
   - `val config`、`fun setConfig { }`、`val role`、`val canRead`、`val canWrite`。
-  - 取消语义：`receive` 在帧中途被取消时，已读入的字节留在读缓冲中，下次 `receive` 继续解析，对应参考 `poll_next` 的"读可取消"；`send` 被取消时，已进入输出缓冲的帧保持完整（帧不会只写出一半），流继续可用。
+  - `receive` 的取消：帧中途被取消时，已读入的字节留在读缓冲中，下次 `receive` 继续解析，对应参考 `poll_next` 的"读可取消"。
+  - **帧的接受与所有权（`feed` / `send` 的取消）**：
+    - **接受**：一个帧被编码并整体追加进连接级输出缓冲（在所属反应器上一次完成，不可分割），即为"已接受"。从此它归连接所有，由写驱动写出，
+      与调用方协程无关；`feed` 在接受后返回。
+    - **接受之前**：输出缓冲已满（达到 `maxWriteBufferSize`）时，`feed` 挂起等待空间。在此期间被取消，帧**未被接受**，没有任何字节进入缓冲或网络，
+      调用方仍拥有该消息。
+    - **接受之后**：调用方被取消（包括在 `flush` 中等待时）不影响已接受的帧，写驱动继续写完。网络上可能已发出半帧，取消无法撤回；由于写驱动
+      持有剩余字节与写入位置，后续帧一定排在它之后，连接保持可用。
+    - **写驱动自身被迫结束**（流出错、连接关闭）：写到一半的帧无法补全，连接进入 Terminated，此后读写抛 `AlreadyClosed`；不会出现"半帧之后接着写新帧"。
+    - **测试**：用 neton-io `memoryStreamPair(capacity = 1)` 让每个字节都可能挂起，在写出过程中的每个字节位置取消调用方，对端收到的始终是完整、按序的帧，
+      连接随后仍可正常收发；在每个字节位置让流出错，本端进入 Terminated，对端从未收到"半帧后接新帧"。
 - **读写分离**：`fun split(): Pair<WebSocketReader, WebSocketWriter>`。参考借助 `futures::split`（BiLock）实现；本库原生提供，读与写可由两个协程分别使用，二者共享 §5 的写通道。
 - **入口**：
   - 客户端：`connect(request, config)`、`client(request, stream, config)`。
   - 服务端：`accept(stream, config)`、`accept(stream, config) { request, response -> … }`。
   - 已握手的流：`WebSocket.fromRawStream(stream, role, config, prefix: Bytes? = null)`，对应 `from_raw_socket` / `from_partially_read`。
 - **缓冲**：读缓冲使用 neton-io `Buffer`（池化，读空后归还）；负载以 neton-io `Bytes` 切片交出（零拷贝，对应参考的 `BytesMut.split_to().freeze()`）。
+  - **零拷贝与缓冲池的关系**：按 neton-io §23.7 现行实现，一个数组一旦被 `Bytes` 切片共享，就不再归还缓冲池，之后由 GC 回收（写时复制保证切片内容
+    不被改写）。因此"零拷贝交出负载"与"持续复用同一块池化数组"不能同时成立：交出了切片的读缓冲会换用新数组。每消息的分配与复制以 callgrind 实测，
+    取两种交付方式（零拷贝切片 / 复制进池化缓冲）中的更优者作为默认，并记录数据。
 - **错误类型**：`WebSocketException` 层级，与参考的 `Error` / `ProtocolError` / `CapacityError` / `SubProtocolError` / `UrlError` 各变体一一对应，保证能力对等；`ConnectionClosed` 以 `receive()` 返回 null 表达，不作为异常抛出。
 
 ## 7. 测试（移植清单）
@@ -263,6 +283,7 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
 | 零拷贝负载切片 | `Bytes` / `Buffer.readSlice` | 已有 |
 | 随机数（掩码、key） | 无 | 本库自带平台 CSPRNG 的 expect / actual；若 `http`、`quic` 也需要，再评估移入公共模块 |
 | SHA-1、base64 | 无 | 本库自带（小，且只用于握手） |
+| 非阻塞写（"能写多少写多少，写不了立即返回"） | `IoStream.write` 写完全部或挂起 | 不需要：写驱动独占写方向，读侧不写（§5） |
 | 连接工厂（明文 / TLS） | `connect` | `wss` 由调用方传入 TLS 包装的工厂 |
 
 ## 10. 实施顺序（在 `http` 首版之后）
