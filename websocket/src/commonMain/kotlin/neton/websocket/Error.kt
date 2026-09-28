@@ -1,5 +1,8 @@
 package neton.websocket
 
+import neton.http.HttpException
+import neton.http.Response
+import neton.http.h1.parse.HttpParseError
 import neton.websocket.frame.OpCode
 
 /**
@@ -7,7 +10,8 @@ import neton.websocket.frame.OpCode
  *
  * The coroutine API (SPEC §6) expresses [ConnectionClosed] as `receive()` returning null; the
  * sans-I/O [WebSocketCore] throws it, like tungstenite returns `Err(ConnectionClosed)`.
- * Handshake-only variants (`Tls`, `Http`, `HttpFormat`) arrive with the handshake (SPEC §3).
+ * The reference's `Tls` variant does not exist here: TLS is an [neton.io.core.IoStream] wrapper
+ * supplied by the caller, whose errors reach the caller as they are (SPEC §2 ⛔).
  */
 sealed class WebSocketException(message: String, cause: Throwable? = null) : Exception(message, cause) {
     /**
@@ -39,6 +43,16 @@ sealed class WebSocketException(message: String, cause: Throwable? = null) : Exc
 
     /** Invalid URL. */
     class Url(val error: UrlError) : WebSocketException("URL error: $error")
+
+    /**
+     * The handshake got an HTTP response other than the upgrade: the peer's non-101 response on
+     * the client, or the error response the server callback chose (and sent). [response]'s body
+     * is what followed the head (client) or the callback's body (server), if any.
+     */
+    class Http(val response: Response<ByteArray?>) : WebSocketException("HTTP error: ${response.status}")
+
+    /** An HTTP value (URI, header name or value, status code) could not be built or parsed. */
+    class HttpFormat(cause: HttpException) : WebSocketException("HTTP format error: ${cause.message}", cause)
 }
 
 /** Which size limit was exceeded (tungstenite `CapacityError`, `error.rs:141-156`). */
@@ -81,6 +95,13 @@ sealed class ProtocolError(private val description: String) {
     data object CustomResponseSuccessful : ProtocolError("Custom response must not be successful")
     data class InvalidHeader(val name: String) : ProtocolError("Missing, duplicated or incorrect header $name")
     data object HandshakeIncomplete : ProtocolError("Handshake not finished")
+    data class HttparseError(val error: HttpParseError) : ProtocolError("httparse error: $error")
+
+    /**
+     * ⚖️ Not in the reference (its check is a TODO): the server's `Sec-WebSocket-Extensions` names
+     * an extension the client did not offer (RFC 6455 §4.1, step 5 of the client's checks; SPEC §3.2).
+     */
+    data class ExtensionNotRequested(val extension: String) : ProtocolError("Server sent an extension that was not requested: $extension")
 
     // ---- frames and the close state machine (SPEC §4, §5) ----
     data object SendAfterClosing : ProtocolError("Sending after closing is not allowed")
