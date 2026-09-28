@@ -20,8 +20,11 @@ sealed class WebSocketException(message: String, cause: Throwable? = null) : Exc
      */
     class ConnectionClosed : WebSocketException("Connection closed normally")
 
-    /** Used the connection after [ConnectionClosed] was reported: a programming error. */
-    class AlreadyClosed : WebSocketException("Trying to work with closed connection")
+    /**
+     * Used the connection after it ended ([ConnectionClosed] was reported, or it failed): a
+     * programming error. [cause] is the failure that ended the connection, if it failed.
+     */
+    class AlreadyClosed(cause: Throwable? = null) : WebSocketException("Trying to work with closed connection", cause)
 
     /** Error of the underlying stream. */
     class Io(cause: Throwable) : WebSocketException("IO error: ${cause.message}", cause)

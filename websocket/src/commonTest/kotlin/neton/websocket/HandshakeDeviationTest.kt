@@ -172,8 +172,8 @@ class HandshakeDeviationTest {
                 stream.close()
             }
             val ok = connect("ws://127.0.0.1:$port/here", maxRedirects = 1)
-            assertEquals(StatusCode.SWITCHING_PROTOCOLS, ok.response.status)
-            ok.stream.close()
+            assertEquals(StatusCode.SWITCHING_PROTOCOLS, ok.second.status)
+            ok.first.abort()
             redirector.close(); target.close()
         }
     }
@@ -191,10 +191,10 @@ class HandshakeDeviationTest {
         val (listener, port) = listenLoopback()
         var domain: String? = null
         coroutineScope {
-            launch { val s = listener.accept(); accept(s); s.close() }
+            launch { accept(listener.accept()).abort() }
             val hs = connect("wss://127.0.0.1:$port/", tlsConnector = TlsConnector { stream, d -> domain = d; stream })
             assertEquals("127.0.0.1", domain)
-            hs.stream.close()
+            hs.first.abort()
             listener.close()
         }
         assertTrue(domain != null)

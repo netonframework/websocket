@@ -12,6 +12,7 @@ import neton.io.core.memoryStreamPair
 import neton.io.net.runReactor
 import neton.websocket.handshake.CallbackResult
 import neton.websocket.handshake.ClientRequest
+import neton.websocket.handshake.ClientResponse
 import neton.websocket.handshake.ServerRequest
 import neton.websocket.handshake.ServerResponse
 import neton.websocket.handshake.generateKey
@@ -19,6 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -48,13 +50,13 @@ class HandshakeFlowTest {
 
     /** The server of `server_thread`: offer [serverSubprotocols], accept, send close. */
     private suspend fun serve(stream: IoStream, serverSubprotocols: List<String>?) {
-        val core = acceptHdr(stream) { _: ServerRequest, response: ServerResponse ->
+        val ws = acceptHdr(stream) { _: ServerRequest, response: ServerResponse ->
             if (serverSubprotocols != null) {
                 response.headers.append("Sec-WebSocket-Protocol", HeaderValue.fromStr(serverSubprotocols.joinToString(",")))
             }
             CallbackResult.Accept(response)
         }
-        try { CoreConnection(stream, core).close() } catch (_: Exception) { } finally { stream.close() }
+        try { ws.close() } catch (_: Exception) { } finally { ws.abort() }
     }
 
     /** Run the server over the given transport and return what the client's handshake gave. */
@@ -62,28 +64,29 @@ class HandshakeFlowTest {
         tcp: Boolean,
         clientSubprotocols: List<String>?,
         serverSubprotocols: List<String>?,
-        check: (Result<ClientHandshakeResult>) -> Unit,
+        check: (Result<ClientResponse>) -> Unit,
     ) = runReactor {
         if (tcp) {
             val (listener, port) = listenLoopback()
             coroutineScope {
                 launch { serve(listener.accept(), serverSubprotocols); listener.close() }
                 val result = runCatching { connect(createHttpRequest("ws://127.0.0.1:$port", clientSubprotocols)) }
-                result.getOrNull()?.stream?.close()
-                check(result)
+                result.getOrNull()?.first?.abort()
+                check(result.map { it.second })
             }
         } else {
             val (c, s) = memoryStreamPair()
             coroutineScope {
                 launch { serve(s, serverSubprotocols) }
-                val result = runCatching { clientHandshake(c, createHttpRequest("ws://127.0.0.1:3012", clientSubprotocols)) }
+                val result = runCatching { client(createHttpRequest("ws://127.0.0.1:3012", clientSubprotocols), c) }
+                result.getOrNull()?.first?.abort()
                 c.close()
-                check(result)
+                check(result.map { it.second })
             }
         }
     }
 
-    private fun subProtocolError(r: Result<ClientHandshakeResult>): SubProtocolError {
+    private fun subProtocolError(r: Result<ClientResponse>): SubProtocolError {
         val e = r.exceptionOrNull()
         assertTrue(e is WebSocketException.Protocol, "expected a protocol error, got $e")
         val p = e.error
@@ -91,8 +94,8 @@ class HandshakeFlowTest {
         return p.error
     }
 
-    private fun protocol(r: Result<ClientHandshakeResult>): String =
-        r.getOrThrow().response.headers["Sec-WebSocket-Protocol"]!!.toStr()
+    private fun protocol(r: Result<ClientResponse>): String =
+        r.getOrThrow().headers["Sec-WebSocket-Protocol"]!!.toStr()
 
     private fun testServerSendNoSubprotocol(tcp: Boolean) = subprotocolCase(tcp, listOf("my-sub-protocol"), null) {
         assertEquals(SubProtocolError.NoSubProtocol, subProtocolError(it))
@@ -147,16 +150,14 @@ class HandshakeFlowTest {
 
         coroutineScope {
             val client = async {
-                val hs = if (tcp) connect(builder) else clientHandshake(clientEnd!!, builder)
-                val conn = hs.connection()
-                conn.send(Message.text("Hello WebSocket"))
-                assertTrue(conn.read().isClose) // receive close from server
-                assertFailsWith<WebSocketException.ConnectionClosed> { conn.read() } // now we should get ConnectionClosed
-                hs.stream.close()
+                val (ws, _) = if (tcp) connect(builder) else client(builder, clientEnd!!)
+                ws.send(Message.text("Hello WebSocket"))
+                assertTrue(ws.receive()!!.isClose) // receive close from server
+                assertNull(ws.receive()) // now we should get ConnectionClosed
             }
 
             val stream = if (tcp) listener!!.accept() else serverEnd!!
-            val core = acceptHdr(stream) { req, response ->
+            val handler = acceptHdr(stream) { req, response ->
                 assertEquals("/socket", req.uri.path)
                 req.headers.forEach { name, value ->
                     if (name.asStr() == "authorization") {
@@ -169,14 +170,12 @@ class HandshakeFlowTest {
                 }
                 CallbackResult.Accept(response)
             }
-            val handler = CoreConnection(stream, core)
             handler.close() // send close to client
 
             // This read should succeed even though we already initiated a close
-            assertEquals("Hello WebSocket", handler.read().intoData().decodeToString())
-            assertTrue(handler.read().isClose) // receive acknowledgement
-            assertFailsWith<WebSocketException.ConnectionClosed> { handler.read() } // now we should get ConnectionClosed
-            stream.close()
+            assertEquals("Hello WebSocket", handler.receive()!!.intoData().decodeToString())
+            assertTrue(handler.receive()!!.isClose) // receive acknowledgement
+            assertNull(handler.receive()) // now we should get ConnectionClosed
             client.await()
             listener?.close()
         }
@@ -193,9 +192,10 @@ class HandshakeFlowTest {
         coroutineScope {
             val client = async { connect(url) }
             val stream = listener.accept()
-            CoreConnection(stream, acceptHdr(stream) { _, r -> CallbackResult.Accept(r) }).close()
-            client.await().stream.close()
-            stream.close()
+            val server = acceptHdr(stream) { _, r -> CallbackResult.Accept(r) }
+            server.close()
+            client.await().first.abort()
+            server.abort()
             listener.close()
         }
     }
@@ -215,20 +215,18 @@ class HandshakeFlowTest {
             coroutineScope {
                 launch {
                     val connection = listener.accept()
-                    accept(connection) // "Failed to handshake with connection"
-                    connection.close()
+                    accept(connection).abort() // "Failed to handshake with connection"
                     listener.close()
                 }
                 val tcpStream = neton.io.net.connect("127.0.0.1", port)
-                clientHandshake(tcpStream, "ws://localhost:$port/")
-                tcpStream.close()
+                client("ws://localhost:$port/", tcpStream).first.abort() // client_async
+
             }
         } else {
             val (c, s) = memoryStreamPair()
             coroutineScope {
-                launch { accept(s); s.close() }
-                clientHandshake(c, "ws://localhost:12345/")
-                c.close()
+                launch { accept(s).abort() }
+                client("ws://localhost:12345/", c).first.abort()
             }
         }
     }
@@ -282,7 +280,7 @@ class HandshakeFlowTest {
         val (c, s) = memoryStreamPair()
         coroutineScope {
             launch {
-                val core = accept(s)
+                val core = serverHandshake(s)
                 core.write(Message.text("early"))
                 s.write(core.output) // the frame goes out right behind the response, before the client reads
                 s.flush()
@@ -290,7 +288,7 @@ class HandshakeFlowTest {
             // The server writes both before the client resumes, so they arrive in one read.
             val hs = clientHandshake(c, "ws://h/")
             assertTrue(hs.leftover.size > 0)
-            assertEquals("early", hs.connection().read().toText())
+            assertEquals("early", WebSocket.start(hs.stream, hs.core).receive()!!.toText())
             c.close(); s.close()
         }
     }

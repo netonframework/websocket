@@ -58,7 +58,8 @@ enum class WebSocketState {
  * - Whoever writes to the network calls [bufferReply] to move the reply behind the queued frames,
  *   writes out [output] (and consumes what was written), flushes the stream, then calls [flushed].
  *   [wantsWrite] tells when [output] passed [WebSocketConfig.writeBufferSize] and should be written
- *   even without a flush.
+ *   even without a flush. A driver that writes while frames keep being queued uses [takeOutput] /
+ *   [outputWritten] instead of writing [output] in place.
  * - Reading never waits for writing: a reply only sits in the slot, and a newer pong replaces an
  *   older one, so the slot never piles up while the peer does not read (SPEC §5).
  *
@@ -158,7 +159,7 @@ class WebSocketCore(
         try {
             while (true) {
                 // Server: once the close handshake is done and everything went out, it is over.
-                if (replyOp == 0 && role == Role.Server && !state.canRead && output.isEmpty) {
+                if (replyOp == 0 && role == Role.Server && !state.canRead && allWritten) {
                     state = WebSocketState.Terminated
                     throw WebSocketException.ConnectionClosed()
                 }
@@ -350,25 +351,35 @@ class WebSocketCore(
      *   [WebSocketConfig.maxWriteBufferSize]; nothing was queued.
      */
     fun write(message: Message) {
+        if (!tryWrite(message)) throw WebSocketException.WriteBufferFull(message)
+    }
+
+    /**
+     * [write] that reports a full [output] by returning false instead of throwing
+     * [WebSocketException.WriteBufferFull] (nothing was queued; the caller keeps [message]). A
+     * driver that waits for room calls this, so waiting costs no exception. Other errors as [write].
+     */
+    fun tryWrite(message: Message): Boolean {
         checkNotTerminated()
         if (!state.isActive) protocolError(ProtocolError.SendAfterClosing)
-        when (message) {
-            is Message.Text -> bufferData(OP_TEXT, message.text.bytes, message)
-            is Message.Binary -> bufferData(OP_BINARY, message.data, message)
+        return when (message) {
+            is Message.Text -> bufferData(OP_TEXT, message.text.bytes)
+            is Message.Binary -> bufferData(OP_BINARY, message.data)
             is Message.Ping -> {
                 checkControlSize(message.data.size)
-                bufferFrame(0x80 or OP_PING, message.data, message, null)
+                bufferFrame(0x80 or OP_PING, message.data, null)
             }
             is Message.Pong -> {
                 checkControlSize(message.data.size)
                 setReply(OP_PONG, message.data)
+                true
             }
-            is Message.Close -> close(message.frame)
+            is Message.Close -> { close(message.frame); true }
             is Message.Frame -> {
                 val f = message.frame
                 val size = f.payload.size
                 if (f.header.opcode is OpCode.Control) checkControlSize(size) else checkMessageSize(size)
-                bufferFrame(f.header.firstByte(), f.payload, message, f.header.mask?.let { packMask(it) })
+                bufferFrame(f.header.firstByte(), f.payload, f.header.mask?.let { packMask(it) })
             }
         }
     }
@@ -414,11 +425,26 @@ class WebSocketCore(
      * @throws WebSocketException.ConnectionClosed the server should now close the connection.
      */
     fun flushed() {
-        if (role == Role.Server && !state.canRead && replyOp == 0 && output.isEmpty) {
+        if (role == Role.Server && !state.canRead && replyOp == 0 && allWritten) {
             state = WebSocketState.Terminated
             throw WebSocketException.ConnectionClosed()
         }
     }
+
+    /**
+     * Hand the queued frames to the writer without copying them (the write driver, SPEC §5): the
+     * returned buffer holds everything [output] held, and [empty] becomes the new [output], so
+     * frames can be queued while the returned bytes are being written. Until [outputWritten], those
+     * bytes still count against [WebSocketConfig.maxWriteBufferSize] and the connection is not
+     * considered fully written.
+     */
+    fun takeOutput(empty: Buffer): Buffer = codec.takeOutput(empty)
+
+    /** The buffer returned by [takeOutput] has been written out completely. */
+    fun outputWritten() { codec.inFlight = 0 }
+
+    /** Nothing queued and nothing being written. */
+    private val allWritten: Boolean get() = output.isEmpty && codec.inFlight == 0
 
     /**
      * The exception for an I/O error of the stream (tungstenite `check_connection_reset`,
@@ -452,23 +478,22 @@ class WebSocketCore(
         if (size > max) throw WebSocketException.Capacity(CapacityError.MessageTooLong(size.toLong(), max.toLong()))
     }
 
-    private fun bufferData(op: Int, payload: Bytes, message: Message) {
+    private fun bufferData(op: Int, payload: Bytes): Boolean {
         checkMessageSize(payload.size)
-        bufferFrame(0x80 or op, payload, message, null)
+        return bufferFrame(0x80 or op, payload, null)
     }
 
     /**
      * Encode one frame into [output] (tungstenite `buffer_frame`, `mod.rs:755-770` and
      * `mod.rs` FrameCodec): a client masks with a fresh random key; a server sends unmasked unless
-     * a raw frame carries its own key ([ownMask]).
+     * a raw frame carries its own key ([ownMask]). Returns false, queueing nothing, when it does not fit.
      */
-    private fun bufferFrame(first: Int, payload: Bytes, message: Message, ownMask: Int?) {
+    private fun bufferFrame(first: Int, payload: Bytes, ownMask: Int?): Boolean {
         val masked = masks != null || ownMask != null
-        if (!codec.fits(headerSize(payload.size.toLong(), masked) + payload.size)) {
-            throw WebSocketException.WriteBufferFull(message)
-        }
+        if (!codec.fits(headerSize(payload.size.toLong(), masked) + payload.size)) return false
         val mask = masks?.next() ?: ownMask ?: 0
         writeFrame(output, first, payload, masked, mask)
+        return true
     }
 
     private companion object {

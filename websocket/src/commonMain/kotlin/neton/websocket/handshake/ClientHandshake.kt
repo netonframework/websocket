@@ -67,6 +67,24 @@ class ClientHandshake private constructor(val request: ByteArray, private val ve
     }
 }
 
+/**
+ * Check [response], obtained for the upgrade [request] through an HTTP client (neton.http's HTTP/1
+ * client with upgrades on; SPEC §1, §6), as [ClientHandshake.verifyResponse] checks a response it
+ * read itself: status 101, `Upgrade`, `Connection`, `Sec-WebSocket-Accept` for the request's key,
+ * extensions and sub-protocols. Then `upgradeOn(response.extensions)` gives the stream for
+ * [neton.websocket.WebSocket.fromUpgraded]. [request] is typically built with `intoClientRequest()`;
+ * it is not changed.
+ *
+ * @throws WebSocketException.Http the status is not 101 (the body is left null).
+ * @throws WebSocketException.Protocol no `Sec-WebSocket-Key` in [request] ([ProtocolError.InvalidHeader]),
+ *   or a check failed.
+ */
+fun verifyUpgradeResponse(request: Request<*>, response: Response<*>) {
+    val key = (request.headers[KEY_HEADERNAME] ?: invalidHeader(KEY_HEADERNAME)).toStrOrThrow()
+    VerifyData(deriveAcceptKey(key.encodeToByteArray()), extractSubprotocolsFromRequest(request), extractExtensionNames(request.headers))
+        .verifyResponse(Response(response.parts, null))
+}
+
 private const val KEY_HEADERNAME = "Sec-WebSocket-Key"
 
 /** Headers that must be present in a correct request, in the order they are written. */
@@ -127,7 +145,7 @@ fun generateRequest(request: ClientRequest): Pair<ByteArray, String> {
 private fun Buffer.writeAscii(s: String) = writeBytes(s.encodeToByteArray())
 
 /** The requested sub-protocols (`extract_subprotocols_from_request`, `client.rs:201-207`). */
-private fun extractSubprotocolsFromRequest(request: ClientRequest): List<String>? =
+private fun extractSubprotocolsFromRequest(request: Request<*>): List<String>? =
     request.headers["Sec-WebSocket-Protocol"]?.toStrOrThrow()?.split(',')?.map { it.trim() }
 
 /**

@@ -161,5 +161,5 @@ fun WebSocketCore.feed(data: ByteArray): WebSocketCore = also { input.writeBytes
 inline fun <reified T : ProtocolError> assertProtocolError(block: () -> Unit): T {
     val e = kotlin.test.assertFailsWith<WebSocketException.Protocol> { block() }
     kotlin.test.assertTrue(e.error is T, "expected ${T::class.simpleName}, got ${e.error}")
-    return e.error as T
+    return e.error
 }

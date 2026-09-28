@@ -180,6 +180,35 @@ suspend fun clientHandshake(stream: IoStream, request: IntoClientRequest, config
     clientHandshake(stream, request.intoClientRequest(), config, limits)
 
 /**
+ * Do the client handshake over [stream] and return the connection with the server's response
+ * (tungstenite `client_with_config`, tokio-tungstenite `client_async_with_config`; SPEC §6).
+ * On success the connection owns [stream]; on failure the caller keeps it (it is not closed).
+ * Errors as [clientHandshake].
+ */
+suspend fun client(
+    request: ClientRequest,
+    stream: IoStream,
+    config: WebSocketConfig? = null,
+    limits: HandshakeLimits = HandshakeLimits(),
+): Pair<WebSocket, ClientResponse> = clientHandshake(stream, request, config, limits).start()
+
+/** [client] for a URL. */
+suspend fun client(url: String, stream: IoStream, config: WebSocketConfig? = null, limits: HandshakeLimits = HandshakeLimits()) =
+    client(url.intoClientRequest(), stream, config, limits)
+
+/** [client] for a URI. */
+suspend fun client(uri: Uri, stream: IoStream, config: WebSocketConfig? = null, limits: HandshakeLimits = HandshakeLimits()) =
+    client(uri.intoClientRequest(), stream, config, limits)
+
+/** [client] for a [ClientRequestBuilder] or another [IntoClientRequest]. */
+suspend fun client(request: IntoClientRequest, stream: IoStream, config: WebSocketConfig? = null, limits: HandshakeLimits = HandshakeLimits()) =
+    client(request.intoClientRequest(), stream, config, limits)
+
+/** Start the connection of a completed client handshake. */
+private suspend fun ClientHandshakeResult.start(): Pair<WebSocket, ClientResponse> =
+    WebSocket.start(stream, core) to response
+
+/**
  * Connect to a `ws://` or `wss://` URL and do the handshake (tungstenite `connect_with_config`,
  * tokio-tungstenite `connect_async_with_config`; SPEC §3.2).
  *
@@ -195,7 +224,7 @@ suspend fun clientHandshake(stream: IoStream, request: IntoClientRequest, config
  * - ⚖️ A name that does not resolve is also [UrlError.UnableToConnect] (the reference: an I/O
  *   error), because neton-io's `connect` reports both the same way.
  *
- * On failure the connection opened here is closed.
+ * Returns the connection and the server's response. On failure the connection opened here is closed.
  */
 suspend fun connect(
     request: ClientRequest,
@@ -204,7 +233,7 @@ suspend fun connect(
     tlsConnector: TlsConnector? = null,
     socketOptions: SocketOptions = SocketOptions.Default,
     limits: HandshakeLimits = HandshakeLimits(),
-): ClientHandshakeResult {
+): Pair<WebSocket, ClientResponse> {
     require(maxRedirects >= 0) { "maxRedirects must not be negative" }
     val parts = request.parts
     var uri = parts.uri
@@ -213,7 +242,7 @@ suspend fun connect(
         // The handshake consumes the request's headers: give each attempt its own copy.
         val next = Request(RequestParts(parts.method, uri, parts.version, parts.headers.clone()), Unit)
         try {
-            return tryConnect(next, config, tlsConnector, socketOptions, limits)
+            return tryConnect(next, config, tlsConnector, socketOptions, limits).start()
         } catch (e: WebSocketException.Http) {
             if (!e.response.status.isRedirection() || attempt >= maxRedirects) throw e
             val location = e.response.headers["Location"] ?: throw e

@@ -20,8 +20,12 @@ internal class FrameCodec(readBufferSize: Int, prefix: Bytes?) {
     /** Received bytes not yet decoded. Pooled: the array goes back to the pool when idle. */
     val input: Buffer = Buffer(maxOf(readBufferSize, FrameHeader.MAX_SIZE), pooled = true)
 
-    /** Encoded frames not yet written out. */
-    val output: Buffer = Buffer(pooled = true)
+    /** Encoded frames not yet written out; [takeOutput] swaps it for an empty buffer. */
+    var output: Buffer = Buffer(pooled = true)
+        private set
+
+    /** Bytes handed to the writer by [takeOutput] and not yet written; they count against [maxOutBufferLen]. */
+    var inFlight: Int = 0
 
     /** The most one read should ask for (`in_buf_max_read`, `mod.rs:124`). */
     val maxReadSize: Int = maxOf(readBufferSize, FrameHeader.MAX_SIZE)
@@ -85,9 +89,19 @@ internal class FrameCodec(readBufferSize: Int, prefix: Bytes?) {
         return Frame(h, input.readSlice(len))
     }
 
-    /** Whether a frame of [frameLen] bytes may be queued now. */
+    /** Whether a frame of [frameLen] bytes may be queued now (bytes in flight count too). */
     fun fits(frameLen: Int): Boolean =
-        output.isEmpty || output.readableBytes.toLong() + frameLen <= maxOutBufferLen
+        (output.isEmpty && inFlight == 0) || output.readableBytes.toLong() + inFlight + frameLen <= maxOutBufferLen
+
+    /** Hand the queued bytes to a writer: [empty] becomes [output], the old one is returned and counted in [inFlight]. */
+    fun takeOutput(empty: Buffer): Buffer {
+        require(empty.isEmpty) { "the replacement output buffer must be empty" }
+        check(inFlight == 0) { "the previous output is still being written" }
+        val out = output
+        output = empty
+        inFlight = out.readableBytes
+        return out
+    }
 
     /**
      * Queue [frame] into [output] (`FrameCodec::buffer_frame`, `mod.rs:250-270`).
