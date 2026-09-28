@@ -295,3 +295,18 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
 5. 性能对照（153）。
 
 每一步单独验证、单独提交，结果记入本 SPEC。
+
+## 11. 实施记录
+
+### 11.1 步骤 1：协议核心（2026-09-28）
+- 代码：`neton.websocket`（`WebSocketCore`、`Message`、`Utf8`、`WebSocketConfig`、`Error`）与 `neton.websocket.frame`（`Coding`、`Mask`、`Frame`、`FrameCodec` / `FrameSocket`），sans-I/O：读侧把收到的字节追加到 `core.input`，`read()` 返回消息或 null（需要更多输入）；写侧只排队，写驱动调用 `bufferReply()` → 写出 `output` → flush → `flushed()`。
+- 测试：87 个，macosArm64 全过；linuxX64、mingwX64、androidNativeArm32、androidNativeX86 编译通过。
+  - 参考 `src/` 单元测试全部移植，`error.rs` 的 3 个（Rust 内存大小断言）不适用 ⛔。
+  - 参考 `tests/`：`auto_pong_flush`、`write`、`connection_reset`（3）、`no_send_after_close`、`receive_after_init_close` 用测试内的同步驱动移植；握手、TLS 相关的留给步骤 2，TCP / 内存流的集成运行留给步骤 3（§6）。
+  - 另有 `DeviationTest`（每个 ⚖️ 一个以上）与 `WebSocketCoreTest`（29 个：解析检查顺序、跨分片重组与 UTF-8、关闭状态机、Ping 洪泛只保留最新 Pong、Close 优先于 Pong、客户端掩码）。
+- 实现中新增的决定（相对 §4、§5 的补充）：
+  - **单帧超过 `maxWriteBufferSize`**：输出缓冲为空时接受 ⚖️。否则有界默认值（4 × `writeBufferSize` = 512 KiB）会使大于 512 KiB 的消息永远无法发送，而入站允许 64 MiB。输出缓冲非空时照常 `WriteBufferFull`。
+  - **我方 Close 经回复槽位发送**（在已排队的帧之后写出），覆盖待发的 Pong，且不会 `WriteBufferFull`；与 §5"槽位中 Close 优先""我方发出 Close 后不再回 pong"一致，与参考代码的路径不同（参考在 Close 之后仍可能写出更早的 Pong，RFC 6455 不允许 Close 之后再发帧）。
+  - `writeBufferSize = 0` 时 `maxWriteBufferSize` 默认 512 KiB（4 × 0 不是合法配置）。
+  - `WriteBufferFull` 交还调用方原来的 `Message`；长度错误报告完整的 64 位长度；`WebSocketState` 公开供驱动使用。
+- 热路径分配：帧头解析进复用字段；解掩码与单帧 UTF-8 校验在输入缓冲内原地完成；负载以零拷贝 `Bytes` 切片交出，每条消息只分配切片与外层对象。以 callgrind 实测留待步骤 5。
