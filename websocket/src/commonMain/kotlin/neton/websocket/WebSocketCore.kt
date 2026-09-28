@@ -95,6 +95,7 @@ class WebSocketCore(
     // The reply slot (tungstenite `additional_send`): opcode 0 when empty, else OP_PONG / OP_CLOSE.
     private var replyOp = 0
     private var replyPayload: Bytes = Bytes.EMPTY
+    private var replyQueued = false
 
     init { applyLimits() }
 
@@ -416,8 +417,18 @@ class WebSocketCore(
         writeFrame(output, 0x80 or op, payload, masks != null, masks?.next() ?: 0)
         replyOp = 0
         replyPayload = Bytes.EMPTY
+        replyQueued = true
         return true
     }
+
+    /**
+     * A reply was moved into [output] since the last call (by the reader or the writer): the writer flushes it at once,
+     * as the reference does. Clears the flag.
+     */
+    fun takeReplyQueued(): Boolean = replyQueued.also { replyQueued = false }
+
+    /** Whether a reply waits in the slot or was queued and not yet flushed. */
+    val hasReplyToFlush: Boolean get() = replyOp != 0 || replyQueued
 
     /**
      * The driver wrote out all of [output] and flushed the stream. A server whose close handshake

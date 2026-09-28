@@ -138,6 +138,9 @@ class WebSocket private constructor(
         while (true) {
             if (endSeen) throw alreadyClosed()
             if (ended) return seeEnd()
+            // tungstenite `read` first writes a pending reply (`_write(None)`): the pong of a ping goes out before the
+            // next message is read, so before any answer to it (Autobahn 5.6). Buffered only, never waited for.
+            if (core.hasPendingReply && core.bufferReply()) driverSignal.signal()
             val message = try {
                 core.read()
             } catch (_: WebSocketException.ConnectionClosed) {
@@ -146,10 +149,17 @@ class WebSocket private constructor(
             } catch (e: WebSocketException) {
                 endSeen = true
                 failRead(e)
+                // A reply due before the failure (the echo of the peer's close) is written before the error is reported, as
+                // the reference's read wrote it first: a caller that closes the socket on the error would otherwise cut it
+                // off. Bounded, in case the peer does not read.
+                if (failAfterFlush != null && !ended) {
+                    kotlinx.coroutines.withTimeoutOrNull(FINAL_FLUSH_MILLIS) { driver?.join() }
+                    if (!ended) end(e)
+                }
                 throw e
             }
             // An automatic reply was queued: the driver writes it; this side never waits for that.
-            if (core.hasPendingReply) driverSignal.signal()
+            if (core.hasReplyToFlush) driverSignal.signal()
             if (message != null) return message
             val n = try {
                 stream.read(core.input)
@@ -181,7 +191,9 @@ class WebSocket private constructor(
      */
     private fun failRead(e: WebSocketException) {
         if (ended) return
-        if (config.sendCloseOnProtocolError && core.hasPendingReply) {
+        // A reply already due (the echo of the peer's close, a pong) goes out before the connection ends: tungstenite wrote it
+        // at the start of the read that failed (Autobahn 7.1.2-7.1.5); a close frame for the error only with the option.
+        if (core.hasReplyToFlush && (config.sendCloseOnProtocolError || !core.canWrite || !core.hasPendingReply)) {
             failAfterFlush = e
             requestFlush()
         } else {
@@ -309,7 +321,8 @@ class WebSocket private constructor(
         try {
             while (!ended) {
                 val target = flushRequested
-                val replied = core.bufferReply()
+                core.bufferReply()
+                val replied = core.takeReplyQueued()
                 val flush = replied || target > flushedUpTo
                 if (!flush && !core.wantsWrite && !core.hasPendingReply) {
                     driverSignal.await()
@@ -384,6 +397,8 @@ class WebSocket private constructor(
     fun split(): Pair<WebSocketReader, WebSocketWriter> = WebSocketReader(this) to WebSocketWriter(this)
 
     companion object {
+        private const val FINAL_FLUSH_MILLIS = 1_000L
+
         /**
          * A connection over a stream whose handshake is already done (tungstenite
          * `from_raw_socket`, `from_partially_read`; tokio-tungstenite `from_raw_socket`,

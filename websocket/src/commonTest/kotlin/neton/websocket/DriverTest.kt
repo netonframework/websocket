@@ -68,8 +68,8 @@ class DriverTest {
     // ---- reads never wait for writes (SPEC §5) ----
 
     /**
-     * The peer floods pings and does not read: every ping is still received, the driver's pending
-     * output stays one pong, and the pongs that go out answer ever newer pings, ending with the last.
+     * The peer floods pings and does not read: every ping is still received, pending output stays within the
+     * write-buffer bound, and the pongs that go out answer ever newer pings, ending with the last.
      */
     @Test fun pingFloodWhilePeerDoesNotRead() = test {
         val (c, s) = memoryStreamPair(capacity = 64)
@@ -90,9 +90,23 @@ class DriverTest {
             assertEquals(OpCode.Control.Pong, f.header.opcode)
             answered += f.payload.int()
         }
-        assertTrue(answered.size < n / 10, "${answered.size} pongs for $n pings")
+        // Like tungstenite's `read` (which writes a pending pong before reading on), pongs are queued behind the output
+        // until it is full and only then replaced: at most one per ping, in order, the last ping always answered.
+        assertTrue(answered.size <= n, "${answered.size} pongs for $n pings")
         assertEquals(answered.distinct().sorted(), answered)
         ws.abort()
+    }
+
+    /** Autobahn 7.1.2: the peer sends two close frames at once; the second is ignored and our close echo still goes out. */
+    @Test fun secondCloseIsIgnoredAndTheEchoGoesOut() = test {
+        val (c, s) = memoryStreamPair()
+        val ws = WebSocket.fromRawStream(s, Role.Server)
+        val peer = RawPeer(c)
+        peer.send(fromClient(0x88, byteArrayOf(0x03, 0xE8.toByte())) + fromClient(0x88))
+        val echo = launch { try { while (ws.receive() != null) { } } catch (_: WebSocketException.Protocol) { } }
+        val f = peer.nextFrame()
+        assertEquals(OpCode.Control.Close, f?.header?.opcode, "no close echo: $f")
+        echo.join()
     }
 
     /**
