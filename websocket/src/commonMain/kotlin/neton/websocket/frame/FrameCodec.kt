@@ -86,7 +86,7 @@ internal class FrameCodec(readBufferSize: Int, prefix: Bytes?) {
                 protocolError(ProtocolError.UnmaskedFrameFromClient)
             }
         }
-        return Frame(h, input.readSlice(len))
+        return Frame(h, neton.websocket.takePayload(input, len))
     }
 
     /** Whether a frame of [frameLen] bytes may be queued now (bytes in flight count too). */

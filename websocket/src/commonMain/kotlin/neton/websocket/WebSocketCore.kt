@@ -261,12 +261,12 @@ class WebSocketCore(
             return when (op) {
                 OP_CLOSE -> doClose(readClose(a, off, len))
                 OP_PING -> {
-                    val data = input.readSlice(len)
+                    val data = takePayload(input, len)
                     // No pong once we sent a close frame.
                     if (state.isActive) setReply(OP_PONG, data)
                     Message.Ping(data)
                 }
-                OP_PONG -> Message.Pong(input.readSlice(len))
+                OP_PONG -> Message.Pong(takePayload(input, len))
                 else -> fail(len, ProtocolError.UnknownControlFrameType(op))
             }
         }
@@ -294,10 +294,10 @@ class WebSocketCore(
                     input.skip(len)
                     throw WebSocketException.Capacity(CapacityError.MessageTooLong(len.toLong(), max.toLong()))
                 }
-                if (op == OP_BINARY) return Message.Binary(input.readSlice(len))
+                if (op == OP_BINARY) return Message.Binary(takePayload(input, len))
                 // Single-frame text: validated in place, handed out without a copy.
                 Utf8Validator.check(a, off, off + len)?.let { input.skip(len); throw WebSocketException.Utf8(it) }
-                return Message.Text(Utf8Bytes.unchecked(input.readSlice(len)))
+                return Message.Text(Utf8Bytes.unchecked(takePayload(input, len)))
             }
             else -> fail(len, ProtocolError.UnknownDataFrameType(op))
         }
@@ -310,7 +310,7 @@ class WebSocketCore(
         val code = ((a[off].toInt() and 0xFF) shl 8) or (a[off + 1].toInt() and 0xFF)
         Utf8Validator.check(a, off + 2, off + len)?.let { input.skip(len); throw WebSocketException.Utf8(it) }
         input.skip(2)
-        return CloseFrame(CloseCode.from(code), Utf8Bytes.unchecked(input.readSlice(len - 2)))
+        return CloseFrame(CloseCode.from(code), Utf8Bytes.unchecked(takePayload(input, len - 2)))
     }
 
     /**
@@ -511,3 +511,21 @@ class WebSocketCore(
         val PROTOCOL_VIOLATION = Utf8Bytes.from("Protocol violation")
     }
 }
+
+/** Payloads up to this size are copied out of the read buffer; larger ones are handed out as slices of it. */
+internal const val PAYLOAD_COPY_LIMIT = 32 * 1024
+
+/**
+ * Take a message payload out of [input]. A slice would make the buffer share its array with the message, so the next
+ * read has to move to a fresh array of the whole read-buffer size (128 KiB by default) — per message. A small payload
+ * is copied instead (one right-sized array) and the read buffer keeps its array; a large one is still a zero-copy slice.
+ */
+internal fun takePayload(input: neton.io.bytes.Buffer, len: Int): Bytes {
+    if (len > PAYLOAD_COPY_LIMIT) return input.readSlice(len)
+    if (len == 0) return Bytes.EMPTY
+    val at = input.readerIndex()
+    val out = Bytes.copyOf(input.backingArray(), at, at + len)
+    input.skip(len)
+    return out
+}
+
