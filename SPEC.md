@@ -367,3 +367,6 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
   文本 / 分片、扇出、大量连接尚未对照。p99.9 的偏高推测与 http SPEC §11 同一原因（GC 线程与反应器共核），因果未确认。
 - 协议测试通过（Autobahn、参考测试）、性能接近（上面的场景）与生产成熟度是三件不同的事；目前只能说明前两项在所测范围内成立。
 - 每消息指令数（cachegrind）：本库 15,296；tungstenite 的数值被其每次读把 128 KiB 读块清零的 `memset` 主导，不宜直接比较。
+- GC 线程优先级（neton-io `NETON_IO_GC_THREAD_NICE=19`，机制见 http SPEC §11 与 neton-io §26.8）下同一场景两轮：本库 149.3k / 146.7k 条/s、
+  p50 322 / 330 µs、p99 533 / 531 µs、p99.9 1.40 / 1.43 ms；tokio-tungstenite 131.6k / 127.6k、p50 364 / 380 µs、p99 654 / 653 µs、p99.9 795 / 859 µs。
+  仍限定于该回显场景；p99.9 仍高于参考。
