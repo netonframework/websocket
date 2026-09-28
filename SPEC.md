@@ -341,3 +341,4 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
   5. `auto_pong_flush` 移植中 Pong 以 1 次 flush 写出（参考 3 次）：阻塞的 flush 在驱动中等待，而不是失败后重试。
   6. 已报告结束后再 `receive()` 抛 `AlreadyClosed`（§5），tokio-tungstenite 则一直返回 `None`。
 - 向 neton-io 提出：可移植的"连接被重置"判断（如 `IoException.isConnectionReset`，本库暂以 `expect` / `actual` 比较 `ECONNRESET` 与 Winsock 10054）；取得监听端口的接口（测试目前随机选端口）。
+- Linux 验收（153，Rocky 9.8）：214 个测试在 epoll 与 io_uring 上全过。
