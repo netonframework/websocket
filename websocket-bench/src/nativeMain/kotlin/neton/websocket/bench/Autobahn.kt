@@ -32,6 +32,7 @@ private suspend fun echo(ws: WebSocket) {
 fun autobahnServerMain(args: Array<String>) {
     val host = args.getOrElse(0) { "127.0.0.1" }
     val port = args.getOrElse(1) { "9002" }.toInt()
+    neton.io.net.GcTuning.fromEnvironment()     // the application's choice (NETON_IO_GC_MIN_HEAP_MB, NETON_IO_GC_THREAD_NICE)
     println("autobahnServer on $host:$port")
     serveTcp(host, port, reactors = 1, shutdownOnSignals = true) { stream ->
         val ws = try { accept(stream) } catch (e: Exception) { println("handshake: $e"); stream.close(); return@serveTcp }
