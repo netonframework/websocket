@@ -342,3 +342,16 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
   6. 已报告结束后再 `receive()` 抛 `AlreadyClosed`（§5），tokio-tungstenite 则一直返回 `None`。
 - 向 neton-io 提出：可移植的"连接被重置"判断（如 `IoException.isConnectionReset`，本库暂以 `expect` / `actual` 比较 `ECONNRESET` 与 Winsock 10054）；取得监听端口的接口（测试目前随机选端口）。
 - Linux 验收（153，Rocky 9.8）：214 个测试在 epoll 与 io_uring 上全过。
+
+### 11.4 步骤 4：Autobahn|Testsuite（2026-09-28，153 上 podman 运行 crossbario/autobahn-testsuite）
+- 驱动：`websocket-bench` 的 `autobahnServer` / `autobahnClient`（tungstenite `examples/autobahn-*.rs` 的等价物），脚本与配置在 `bench/autobahn/`。
+- 结果（服务端与客户端两个方向，各 517 个用例）：行为 OK 296、NON-STRICT 2、INFORMATIONAL 3，关闭 OK 514、INFORMATIONAL 3，无失败；
+  UNIMPLEMENTED 216 为 permessage-deflate（12.x、13.x），参考同样未实现。
+- 首轮发现并修正：
+  - 2.10 / 5.6 / 5.19（每个 Ping 一个 Pong、Pong 先于随后消息的回显）：读者在写驱动运行前连续解出多个 Ping，旧 Pong 被覆盖、回显先于 Pong。
+    按 tungstenite `read` 开头的 `_write(None)`，`receive()` 在读下一条消息前把待发回复移入输出（只缓冲，不等待写出）；回复只在输出已满时被替换。
+    §5 的洪泛测试随之改为断言"至多每个 Ping 一个 Pong、按序、最后一个必答、待发数据不超过写缓冲上限"（参考在对端不读时同样把 Pong 排在
+    输出中，直到写缓冲满）。
+  - 写驱动只在自己移动回复时 flush：读者移入的回复不会被写出（服务端关闭握手卡住）。改为核心记录"自上次 flush 以来有回复入队"，驱动据此 flush。
+  - 7.1.2–7.1.5（关闭之后再收到帧，要求干净关闭）：读失败时连接立即关闭，已入队的关闭回显来不及写出。改为：已有到期回复时先 flush 再结束，
+    且 `receive()` 在抛出错误前等待这次最终 flush（至多 1 s，防对端不读）——参考在失败的那次 `read` 开头已写出回复。
