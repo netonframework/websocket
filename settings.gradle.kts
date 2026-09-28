@@ -6,3 +6,6 @@ dependencyResolutionManagement {
 }
 rootProject.name = "websocket-build"
 include(":websocket")
+
+// com.netonstream:http from the sibling repo until it is published.
+includeBuild("../http")

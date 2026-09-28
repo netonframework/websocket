@@ -9,7 +9,11 @@ kotlin {
     androidNativeArm64(); androidNativeArm32(); androidNativeX64(); androidNativeX86()
 
     sourceSets {
-        commonMain.dependencies { api("com.netonstream:io:0.2.0-SNAPSHOT") }
+        commonMain.dependencies {
+            api("com.netonstream:io:0.2.0-SNAPSHOT")
+            // HTTP types and the HTTP/1 head parser for the handshake (SPEC §1); the http repo is included as a build until it is published.
+            api("com.netonstream:http:0.1.0-SNAPSHOT")
+        }
         commonTest.dependencies { implementation(kotlin("test")) }
     }
 }
