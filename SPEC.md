@@ -310,3 +310,16 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
   - `writeBufferSize = 0` 时 `maxWriteBufferSize` 默认 512 KiB（4 × 0 不是合法配置）。
   - `WriteBufferFull` 交还调用方原来的 `Message`；长度错误报告完整的 64 位长度；`WebSocketState` 公开供驱动使用。
 - 热路径分配：帧头解析进复用字段；解掩码与单帧 UTF-8 校验在输入缓冲内原地完成；负载以零拷贝 `Bytes` 切片交出，每条消息只分配切片与外层对象。以 callgrind 实测留待步骤 5。
+
+### 11.2 步骤 2：握手（2026-09-28）
+- 代码：`handshake/`（`Sha1`、`Base64`（严格解码，同 `data_encoding`）、`Handshake`（`deriveAcceptKey`、`MAX_HEADERS = 124`、`HandshakeLimits` / `AttackCheck`、头部读取、解析错误映射）、`ClientHandshake`、`ServerHandshake`），入口 `Client.kt`（`clientHandshake`、`connect`，同时覆盖参考的 `connect` 与 `connect_async`）、`Server.kt`（`accept` / `acceptWithConfig` / `acceptHdr` / `acceptHdrWithConfig`）。基于 `com.netonstream:http` 的类型与 httparse 移植。
+- 测试：175 个（步骤 1 的 87 + 88），macosArm64 全过（另三次 `--rerun-tasks` 全过，TCP 用例稳定）；linuxX64、mingwX64 编译通过。
+  - 参考：`handshake/mod.rs` 1、`headers.rs` 3、`client.rs` 8、`server.rs` 7 全部移植；`tests/handshake.rs` 6 → 12（内存流与 TCP 各一遍）、`client_headers.rs` 1 → 2、`url_feature.rs` 1、`wss_fails_when_no_tls.rs` 1；tokio-tungstenite `handshakes.rs` 1 → 2。
+  - 另加：`MachineTest` 9、`HandshakeChecksTest` 19（两侧校验顺序、请求生成、回调结果）、`HandshakeDeviationTest` 12（每个 ⚖️ 一个以上）、流程 6 个（非 101 响应带体、拒绝、剩余字节交给核心、请求后的垃圾字节、握手中 EOF、端口关闭 → `UnableToConnect`）。
+- ⚖️ 与 §3 一致的：挂起代替 `Interrupted` / `MidHandshake`；防攻击上限可配置（默认同参考）；增量解析（头部结束后解析一次；未完成头部内的错误延后到头部结束、EOF 或触发上限时报告，上限情形先报告更早的错误，与参考一致）；`generateKey` 用平台 CSPRNG；客户端按 token 列表读 `Connection`；未请求的扩展被拒绝（`ExtensionNotRequested`）；`maxRedirects` 默认 0；`TCP_NODELAY` 开启。
+- 实现中新增的决定：
+  - DNS 失败报告为 `UnableToConnect`（neton-io 的 `connect` 不区分解析失败与连接被拒）；向 neton-io 提出：公开解析接口，以及取得监听端口的接口。
+  - 继承自 http 的默认解析配置：单独的 LF 行结束被拒绝（http SPEC §3.9）。
+  - 调用方提供的流由调用方拥有：`clientHandshake` 与 `accept*` 失败时不关闭它；`connect` 关闭自己打开的流。
+  - 参考的 `Tls` 错误变体不移植（TLS 由调用方提供，⛔）；`EmptyHostName` 实际不可达（`user@` 的 authority 本身是非法 URI，与 Rust `http` crate 相同），保留该检查。
+- 客户端握手的结果中，响应之后的剩余字节已经装入 `WebSocketCore`，`leftover` 只供查看，步骤 3 不得重复送入。
