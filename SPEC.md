@@ -323,3 +323,21 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
   - 调用方提供的流由调用方拥有：`clientHandshake` 与 `accept*` 失败时不关闭它；`connect` 关闭自己打开的流。
   - 参考的 `Tls` 错误变体不移植（TLS 由调用方提供，⛔）；`EmptyHostName` 实际不可达（`user@` 的 authority 本身是非法 URI，与 Rust `http` crate 相同），保留该检查。
 - 客户端握手的结果中，响应之后的剩余字节已经装入 `WebSocketCore`，`leftover` 只供查看，步骤 3 不得重复送入。
+
+### 11.3 步骤 3：协程驱动（2026-09-28）
+- 代码：`WebSocket.kt`（`receive()` 正常结束返回 null、`feed` / `flush` / `send` / `trySend` / `close` / `config` / `setConfig` / `canRead` / `canWrite` / `abort()`、`split()` 返回读写两半、`fromRawStream`、`fromUpgraded`、`verifyUpgradeResponse`），`ConnectionReset.native.kt`；`WebSocketCore` 增加 `tryWrite` / `takeOutput` / `outputWritten`。
+- 写驱动（§5）：每个连接一个长期写协程，独占流的写方向，运行在创建者的调度器上、拥有自己的 Job；`receive()` 只把自动回复放进回复槽位并唤醒驱动，从不等待写出；驱动以交换缓冲的方式取走待写数据，写出期间仍可排队，正在写出的字节仍计入 `maxWriteBufferSize`；发送一条消息不启动协程，`feed` 只在超过 `writeBufferSize` 时让出（与参考 `write.rs` 的写出与 flush 次数一致）。
+- 同一时刻至多一个 `receive` 与一个写操作，第二个并发调用抛 `IllegalStateException`（同 `IoStream`）。握手成功后流归 `WebSocket` 所有并在连接结束时关闭；握手失败时流仍归调用方。
+- 入口的签名改变：`connect` / 新增 `client` 返回 `Pair<WebSocket, ClientResponse>`；`accept*` 返回 `WebSocket`，另有 `accept(stream, config) { request, response -> }`；`serverHandshake` 与 `clientHandshake` 保留为核心级握手。
+- 测试：214 个（步骤 1–2 的 175 + 39），连续三次全过；linuxX64、mingwX64 编译通过。
+  - 参考：`connection_reset.rs` 3 → 6（内存流与 TCP，"恶意服务端"用 `SO_LINGER 0`）、`no_send_after_close.rs` 1 → 2、`receive_after_init_close.rs` 1 → 2、`write.rs` 1、`auto_pong_flush.rs` 1；tokio-tungstenite `communication.rs` 2 → 4（整体与拆分，内存流与 TCP）；握手相关的测试改走 `client` / `connect` / `accept*`。
+  - `DriverTest` 14：对端不读时的 Ping 洪泛（每个 Ping 都收到，只发出少量越来越新的 Pong）、对端不读时我方关闭（Close 优先，其后无 Pong）、在帧的每个切分位置取消 `receive` 不丢数据、取消的 `feed` 不排队、`trySend` 报告缓冲已满、单字节管道上在每个字节位置取消 `send`、在每个字节位置流出错（对端只收到帧的前缀）、协议错误（开关 `sendCloseOnProtocolError`）、对端关闭后的写错误仍为正常结束、`abort`、单个 receive、两个协程分别使用拆分的两半、TCP 上 3 MiB 消息。
+  - `UpgradeTest` 9：http 服务端升级交给 `fromUpgraded`（内存流与 TCP）、头部之后已读字节随流交出、非法升级请求得 400、http 客户端升级（内存流与 TCP）、http 客户端对 http 服务端（内存流与 TCP）、`verifyUpgradeResponse` 的校验。
+- ⚖️：
+  1. `feed` 在输出缓冲满时挂起而非 `WriteBufferFull`，`trySend` 返回 false（§4.3 已定）。
+  2. `receive` 遇到协议、UTF-8 或大小错误时结束连接并关闭流（开启 `sendCloseOnProtocolError` 时先发失败关闭帧）；参考返回错误、由调用方丢弃连接。依据 RFC 6455 §7.1.7"失败连接"；这修订了 §5"协议错误由调用方断开"的做法：有了写驱动，断开由库完成，默认仍不发送关闭帧。
+  3. 收到对端 Close 之后的任何写错误都算正常结束（不只是重置）：我方回显是否因重置、管道断开而失败取决于时序。
+  4. `abort()` 代替 Rust 的 drop。
+  5. `auto_pong_flush` 移植中 Pong 以 1 次 flush 写出（参考 3 次）：阻塞的 flush 在驱动中等待，而不是失败后重试。
+  6. 已报告结束后再 `receive()` 抛 `AlreadyClosed`（§5），tokio-tungstenite 则一直返回 `None`。
+- 向 neton-io 提出：可移植的"连接被重置"判断（如 `IoException.isConnectionReset`，本库暂以 `expect` / `actual` 比较 `ECONNRESET` 与 Winsock 10054）；取得监听端口的接口（测试目前随机选端口）。
