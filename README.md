@@ -9,8 +9,8 @@ Specification, every deliberate difference from the reference (marked ⚖️), a
 
 ## Status
 
-Not published yet; built against `com.netonstream:io:0.2.0-SNAPSHOT` from `mavenLocal`. Kotlin 2.4.0, native
-targets only.
+Not published yet; built against the published `com.netonstream:io:0.1.0` and `com.netonstream:http:0.1.0`. Kotlin
+2.4.0, native targets only.
 
 - **Frames and messages:** masking, fragmentation, UTF-8 validation of text messages (incremental), control frames,
   and the close handshake.

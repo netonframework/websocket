@@ -1,6 +1,6 @@
 plugins { kotlin("multiplatform"); `maven-publish` }
 
-// Same targets as com.netonstream:io (resolved from mavenLocal until 0.2.0 is on Maven Central).
+// Same targets as com.netonstream:io.
 kotlin {
     linuxX64(); linuxArm64()
     macosArm64(); macosX64()
@@ -10,9 +10,9 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            api("com.netonstream:io:0.2.0-SNAPSHOT")
+            api("com.netonstream:io:0.1.0")
             // HTTP types and the HTTP/1 head parser for the handshake (SPEC §1); the http repo is included as a build until it is published.
-            api("com.netonstream:http:0.1.0-SNAPSHOT")
+            api("com.netonstream:http:0.1.0")
         }
         commonTest.dependencies { implementation(kotlin("test")) }
     }
