@@ -2,7 +2,7 @@
 
 > Kotlin/Native 的 WebSocket（RFC 6455）协议库，建在 `com.netonstream:io` 之上。
 > 坐标 `com.netonstream:websocket`，包 `neton.websocket`。仓库 `websocket`。
-> 状态：草案 v1（2026-09-27，按 GPT 评审修订：写侧背压不阻塞读侧、帧的接受与所有权、零拷贝与缓冲池的关系；待评审）。
+> 状态：v1 已实现（permessage-deflate 除外，参考同样未实现），实施记录见 §11；首个发布版本 0.1.0（依赖 io 0.2.0、http 0.1.1）。
 
 ## 0. 依据与范围
 
@@ -370,3 +370,18 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
 - GC 线程优先级（neton-io `NETON_IO_GC_THREAD_NICE=19`，机制见 http SPEC §11 与 neton-io §26.8）下同一场景两轮：本库 149.3k / 146.7k 条/s、
   p50 322 / 330 µs、p99 533 / 531 µs、p99.9 1.40 / 1.43 ms；tokio-tungstenite 131.6k / 127.6k、p50 364 / 380 µs、p99 654 / 653 µs、p99.9 795 / 859 µs。
   仍限定于该回显场景；p99.9 仍高于参考。
+
+### 11.6 模糊测试与发布准备（2026-10-08）
+- **模糊测试**（§7 要求的三个目标，此前未写）：`nativeTest` 的 `FuzzTest`，确定性运行，随测试套件执行。
+  - 目标：`parse_frame_header` 对应 `FrameHeader.parse`（连续解析，跳过已到达的负载）；`read_message_client` / `read_message_server` 对应
+    `WebSocketCore(Role.Client / Role.Server).read()`，输入整段喂入一次、再按随机块（不超过 `maxReadSize`）喂入一次，输入结束时调用 `receivedEof`。
+  - 输入：参考语料（`NETON_WS_FUZZ_SEEDS`，缺省为 `$HOME` 下的参考检出）的每个种子，加按固定随机种子生成的变异（翻转位、改字节、截断、
+    复制片段、插入随机字节，各 1–4 处；帧头目标每种子 64 个，读消息目标各 32 个），另加 2000 个与语料无关的随机输入（随机字节串，或字段、
+    长度、掩码随机的帧序列），无语料时也会运行并打印提示。
+  - 判定：只允许 `WebSocketException`（其他异常即失败）；每条消息至少消耗一个帧头，读出的消息数超过输入字节数 + 16 即判为挂起；输入结束后
+    `read` 不得返回 null（只能结束或失败）。
+  - 结果（macOS arm64）：帧头 15 个种子、2975 个输入；客户端 564 个种子、20612 个输入，解出 20064 条消息，结束方式 Protocol 38090、Utf8 1534、
+    ConnectionClosed 1524、Capacity 76；服务端 244 个种子、10052 个输入，解出 708 条消息，Protocol 18090、Utf8 1300、Capacity 456、
+    ConnectionClosed 258。全部通过，无崩溃、无挂起、无非法异常类型。三个目标共约 4 s。
+- **依赖与发布配置**：改为 io 0.2.0、http 0.1.1；版本 0.1.0；POM、签名、javadoc jar 与本地暂存仓库，与 http 相同（`websocket-bench` 不发布）。
+  测试 218 个（此前 215 + `FuzzTest` 3 个），macOS arm64 全部通过。

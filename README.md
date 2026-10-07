@@ -9,8 +9,8 @@ Specification, every deliberate difference from the reference (marked ⚖️), a
 
 ## Status
 
-Not published yet; built against the published `com.netonstream:io:0.1.0` and `com.netonstream:http:0.1.0`. Kotlin
-2.4.0, native targets only.
+Version 0.1.0 (not yet on Maven Central), built against `com.netonstream:io:0.2.0` and `com.netonstream:http:0.1.1`.
+Kotlin 2.4.0, native targets only.
 
 - **Frames and messages:** masking, fragmentation, UTF-8 validation of text messages (incremental), control frames,
   and the close handshake.
@@ -21,7 +21,8 @@ Not published yet; built against the published `com.netonstream:io:0.1.0` and `c
 
 ## Conformance
 
-- tungstenite's own tests are ported; the suite has 215 tests.
+- tungstenite's own tests are ported, and its three fuzz targets run as deterministic tests over its seed corpus with
+  seeded mutations (SPEC §11.6); the suite has 218 tests.
 - Autobahn|Testsuite, run in both the client and the server direction (517 cases each):
   - no failures;
   - behaviour: 296 OK, 2 NON-STRICT (the same as the reference), 3 INFORMATIONAL;
