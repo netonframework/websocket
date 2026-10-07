@@ -9,7 +9,7 @@ Specification, every deliberate difference from the reference (marked ⚖️), a
 
 ## Status
 
-Version 0.1.0 (not yet on Maven Central), built against `com.netonstream:io:0.2.0` and `com.netonstream:http:0.1.1`.
+Release coordinate: `com.netonstream:websocket:0.1.0`, built against `com.netonstream:io:0.3.0` and `com.netonstream:http:0.1.2`.
 Kotlin 2.4.0, native targets only.
 
 - **Frames and messages:** masking, fragmentation, UTF-8 validation of text messages (incremental), control frames,
