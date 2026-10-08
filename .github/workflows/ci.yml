@@ -70,7 +70,6 @@ jobs:
         include:
           - { name: plain, compression: "0" }
           - { name: permessage-deflate, compression: "1" }
-          - { name: permessage-deflate 12.2, compression: "1", cases: "12.2.*" }
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:

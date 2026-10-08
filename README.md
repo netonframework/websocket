@@ -17,7 +17,8 @@ Kotlin 2.4.0, native targets only.
 - **Handshake:** client and server, including tungstenite's callback for inspecting or rejecting the server
   handshake. TLS is left to the caller (`TlsConnector`).
 - **Configuration:** tungstenite's `WebSocketConfig`: message, frame and buffer limits and the write-buffer policy.
-- **Not implemented:** permessage-deflate (RFC 7692). tungstenite 0.30 does not implement it either.
+- **permessage-deflate (RFC 7692):** off by default (tungstenite 0.30 has none); `WebSocketConfig(compression =
+  PerMessageDeflateConfig())` offers it as a client or accepts it as a server, with the four RFC parameters (SPEC §11.7).
 
 ## Conformance
 
@@ -26,7 +27,8 @@ Kotlin 2.4.0, native targets only.
 - Autobahn|Testsuite, run in both the client and the server direction (517 cases each):
   - no failures;
   - behaviour: 296 OK, 2 NON-STRICT (the same as the reference), 3 INFORMATIONAL;
-  - 216 UNIMPLEMENTED: the permessage-deflate cases, which tungstenite does not implement either.
+  - without compression, 216 UNIMPLEMENTED: the permessage-deflate cases, which tungstenite does not implement;
+  - with permessage-deflate on, those 216 pass too: 512 OK, 2 NON-STRICT, 3 INFORMATIONAL in each direction.
 
 ## Usage
 

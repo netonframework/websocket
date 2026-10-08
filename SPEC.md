@@ -385,3 +385,34 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
     ConnectionClosed 258。全部通过，无崩溃、无挂起、无非法异常类型。三个目标共约 4 s。
 - **依赖与发布配置**：改为 io 0.2.0、http 0.1.1；版本 0.1.0；POM、签名、javadoc jar 与本地暂存仓库，与 http 相同（`websocket-bench` 不发布）。
   测试 218 个（此前 215 + `FuzzTest` 3 个），macOS arm64 全部通过。
+
+### 11.7 permessage-deflate（RFC 7692，2026-10-08）
+⚖️ 参考 tungstenite 0.30（及至今 crates.io 上的全部版本）没有实现；本库按 RFC 7692 实现，以 RFC 附录 §7.2.3 的字节级示例与 Autobahn 第 12、13 节
+（此前 216 个 UNIMPLEMENTED）验收。默认关闭：`WebSocketConfig.compression = PerMessageDeflateConfig(...)` 时客户端发出提议、服务端接受。
+- **压缩库**：Kotlin/Native 自带的 `platform.zlib`（各目标都有；mingw 静态链接 sysroot 的 libz.a），原始 DEFLATE、同步刷新。只用 32 位的
+  `avail_in` / `avail_out`：`uLong`（`deflateBound`、`total_*`）在 Windows 上为 32 位、其他平台 64 位，共享源集无法编译；压缩上界自算
+  （`len + len/1024 + 64`，大于 zlib 的上界）。
+- **协商**（§5、§7.1）：四个参数 `server/client_no_context_takeover`、`server/client_max_window_bits`；参数名不认识、重复、取值非法（9–15 以外、
+  前导零、带引号以外的写法）的提议整条拒绝，服务端取第一条可接受的提议。zlib 不能以 8 位窗口压缩原始 DEFLATE：会让本方以 8 压缩的提议被
+  拒绝（RFC 允许服务端拒绝）、服务端回应要客户端以 8 压缩时握手失败；以 8 解压可以。服务端只有在提议含 `client_max_window_bits` 时才限制
+  客户端窗口。客户端按自己的提议严格校验回应（多出、超出、缺值即 `ProtocolError.InvalidExtensionParameters`）。双方从服务端实际发出的回应
+  读出参数（`PerMessageDeflate.fromResponse`），回调改动回应也一致。经 HTTP 升级的路径用 `negotiatePerMessageDeflate` 与 `fromUpgraded(deflate=)`。
+- **帧**（§6）：RSV1 只允许出现在压缩消息的首帧（文本 / 二进制），控制帧、续帧、未协商时仍为 `NonZeroReservedBits`。
+- **接收**：压缩消息逐帧解压进 `IncompleteMessage`，每块解压输出都经过消息大小上限与增量 UTF-8 校验，解压炸弹在上限处停止（测试：64 MiB 的
+  零压缩成约 64 KiB，在 1 MiB 上限处以 `MessageTooLong` 失败）；末帧后补回 `00 00 ff ff`；对端不接管上下文时每条消息后复位解压器。BFINAL 块
+  按 §7.2.3.4 处理。非法数据为 `ProtocolError.InvalidCompressedData`。
+- **发送**：每条消息压缩成一帧、置 RSV1。先以压缩上界检查输出缓冲是否放得下，放不下时不触碰压缩器即返回（写驱动稍后重试同一条消息时
+  压缩上下文仍正确）；压缩后去掉末尾 `00 00 ff ff`；本方不接管上下文时每条后复位。空消息为单字节 `00`（§7.2.3.6；上一次刷新之后 zlib 不再
+  输出任何字节，此时直接写 `00`——测试中发现）。
+- **资源**：压缩器（15 位窗口约 256 KiB）与解压器（约 44 KiB）在首次使用时分配，连接终止时释放，GC cleaner 兜底。
+- **测试**（`PerMessageDeflateTest`，29 个）：RFC 的 "Hello"、共享上下文的第二个 "Hello"（`f2 00 11 00 00`）、分片、BFINAL、空消息；
+  未压缩消息照常；各种大小（16 B–128 KiB、随机与可压缩，双向，接管与不接管）；控制帧 / 续帧 / 未协商时的 RSV1；非法数据；解压后的 UTF-8；
+  解压炸弹；写缓冲放不下时压缩器不变；协商的接受、参数、拒绝与第一条可接受；客户端校验；握手两端都开、只开一端。全量 247 个。
+- **Autobahn**（GitHub Actions，ubuntu-latest，Docker 运行 crossbario/autobahn-testsuite；`bench/autobahn/run.sh` 遇到意外结果即非零退出，
+  报告作为制品上传）：不开压缩时两个方向与 §11.4 相同（OK 296、NON-STRICT 2、INFORMATIONAL 3、UNIMPLEMENTED 216）；开压缩时两个方向均为
+  OK 512、NON-STRICT 2、INFORMATIONAL 3，关闭行为 OK 514、INFORMATIONAL 3，无失败。第一轮开压缩时服务端方向在 12.2.9 中断、未生成报告
+  （服务端日志无错误）；加上"服务端提前退出"的诊断后重跑（全部及单独 12.2.*）均通过，原因未能确定。
+- **CI**（本仓库此前没有 CI）：测试在 macOS、Linux（epoll、io_uring）、Windows（IOCP、WSAPoll）上运行；Windows IOCP 的
+  `DriverIntegrationTest.testNoSendAfterCloseTcp` 失败：对端断开后 IOCP 的读以 WSAECONNABORTED 结束，io 0.3.0 只把 WSAECONNRESET 算作连接重置。
+  已在 io 修正（main b9a425e），需随 io 的下一个版本生效。
+
