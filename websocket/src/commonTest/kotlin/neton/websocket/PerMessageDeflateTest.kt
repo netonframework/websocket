@@ -145,6 +145,27 @@ class PerMessageDeflateTest {
         }
     }
 
+    /** Autobahn 12.x / 13.x in miniature: many messages of each size, random and compressible, both ways. */
+    @Test fun manyMessagesOfEverySizeBothWays() {
+        val rnd = kotlin.random.Random(12)
+        for (noCtx in listOf(false, true)) {
+            val c = client(params(compressNoContextTakeover = noCtx, decompressNoContextTakeover = noCtx))
+            val s = server(params(compressNoContextTakeover = noCtx, decompressNoContextTakeover = noCtx))
+            for (size in listOf(16, 64, 256, 1024, 4096, 8192, 16384, 32768, 65536, 131072)) {
+                repeat(if (size > 16384) 20 else 100) { i ->
+                    val m = if (i % 2 == 0) rnd.nextBytes(size) else ByteArray(size) { (it % 13).toByte() }
+                    c.write(Message.binary(m))
+                    s.feed(c.output.readAll())
+                    val got = assertIs<Message.Binary>(s.read()).data.toByteArray()
+                    assertContentEquals(m, got, "client to server, size $size #$i")
+                    s.write(Message.binary(got))
+                    c.feed(s.output.readAll())
+                    assertContentEquals(m, assertIs<Message.Binary>(c.read()).data.toByteArray(), "server to client, size $size #$i")
+                }
+            }
+        }
+    }
+
     @Test fun clientFramesAreMaskedAndRead() {
         val c = client()
         val s = server()

@@ -70,6 +70,7 @@ jobs:
         include:
           - { name: plain, compression: "0" }
           - { name: permessage-deflate, compression: "1" }
+          - { name: permessage-deflate 12.2, compression: "1", cases: "12.2.*" }
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -92,6 +93,7 @@ jobs:
         env:
           CONTAINER: docker
           NETON_WS_COMPRESSION: ${{ matrix.compression }}
+          AUTOBAHN_CASES: ${{ matrix.cases }}
         run: |
           mkdir -p ab && cp -r bench/autobahn/config ab/
           cp websocket-bench/build/bin/linuxX64/autobahnServerReleaseExecutable/autobahnServer.kexe ab/
