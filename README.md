@@ -9,7 +9,8 @@ Specification, every deliberate difference from the reference (marked ⚖️), a
 
 ## Status
 
-Release coordinate: `com.netonstream:websocket:0.1.0`, built against `com.netonstream:io:0.3.0` and `com.netonstream:http:0.1.2`.
+Release coordinate: `com.netonstream:websocket:0.2.0`, built against `com.netonstream:io:0.3.2` and `com.netonstream:http:0.2.0`.
+0.2.0 adds permessage-deflate (RFC 7692, off by default).
 Kotlin 2.4.0, native targets only.
 
 - **Frames and messages:** masking, fragmentation, UTF-8 validation of text messages (incremental), control frames,

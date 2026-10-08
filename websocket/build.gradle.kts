@@ -10,9 +10,9 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            api("com.netonstream:io:0.3.1")
+            api("com.netonstream:io:0.3.2")
             // HTTP types and the HTTP/1 head parser for the handshake (SPEC §1).
-            api("com.netonstream:http:0.1.2")
+            api("com.netonstream:http:0.2.0")
         }
         commonTest.dependencies { implementation(kotlin("test")) }
     }
