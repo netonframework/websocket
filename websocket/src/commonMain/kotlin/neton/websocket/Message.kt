@@ -111,6 +111,9 @@ private fun Message.display(): String =
  * as a slice of that buffer, without another copy.
  */
 internal class IncompleteMessage(private val isText: Boolean) {
+    /** ⚖️ A permessage-deflate message: its frames are inflated into it. */
+    var compressed = false
+
     private val buf = Buffer(1024)
     private val utf8: Utf8Validator? = if (isText) Utf8Validator() else null
 

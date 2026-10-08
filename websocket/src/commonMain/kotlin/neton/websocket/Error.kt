@@ -127,6 +127,15 @@ sealed class ProtocolError(private val description: String) {
      * (RFC 6455 §5.2 requires it to be 0; SPEC §4.1).
      */
     data object InvalidPayloadLength : ProtocolError("Payload length has the most significant bit set")
+
+    /** ⚖️ permessage-deflate (RFC 7692; not in the reference): a compressed message is not valid DEFLATE. */
+    data class InvalidCompressedData(val detail: String) : ProtocolError("Invalid compressed data: $detail")
+
+    /**
+     * ⚖️ permessage-deflate: the server's `Sec-WebSocket-Extensions` response has parameters the client cannot accept
+     * (RFC 7692 §5: unknown, repeated or invalid, or not matching the offer).
+     */
+    data class InvalidExtensionParameters(val detail: String) : ProtocolError("Invalid extension parameters: $detail")
 }
 
 /** URL errors (tungstenite `UrlError`, `error.rs:277-299`); used by the client entry points (SPEC §3.2). */

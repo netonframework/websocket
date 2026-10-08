@@ -402,14 +402,16 @@ class WebSocket private constructor(
         /**
          * A connection over a stream whose handshake is already done (tungstenite
          * `from_raw_socket`, `from_partially_read`; tokio-tungstenite `from_raw_socket`,
-         * `from_partially_read`). [prefix] holds bytes already read past the handshake.
+         * `from_partially_read`). [prefix] holds bytes already read past the handshake. [deflate]: ⚖️ the
+         * permessage-deflate the handshake negotiated ([PerMessageDeflate.fromResponse]), null for none.
          */
         suspend fun fromRawStream(
             stream: IoStream,
             role: Role,
             config: WebSocketConfig? = null,
             prefix: Bytes? = null,
-        ): WebSocket = start(stream, WebSocketCore(role, config ?: WebSocketConfig(), prefix?.takeUnless { it.isEmpty }))
+            deflate: PerMessageDeflate? = null,
+        ): WebSocket = start(stream, WebSocketCore(role, config ?: WebSocketConfig(), prefix?.takeUnless { it.isEmpty }, deflate))
 
         /**
          * Take over a connection an HTTP server or client upgraded (SPEC §1; tokio-tungstenite's
@@ -417,10 +419,12 @@ class WebSocket private constructor(
          * [neton.websocket.handshake.createResponse]) and `upgradeOn(request.extensions)`; the
          * client side after [neton.websocket.handshake.verifyUpgradeResponse] and
          * `upgradeOn(response.extensions)`. Bytes the HTTP connection read past the head come first.
+         * ⚖️ With permessage-deflate: the server calls [negotiatePerMessageDeflate] on its response, and either side
+         * passes [PerMessageDeflate.fromResponse] of the response as [deflate].
          */
-        suspend fun fromUpgraded(upgraded: Upgraded, role: Role, config: WebSocketConfig? = null): WebSocket {
+        suspend fun fromUpgraded(upgraded: Upgraded, role: Role, config: WebSocketConfig? = null, deflate: PerMessageDeflate? = null): WebSocket {
             val (stream, prefix) = upgraded.downcast()
-            return fromRawStream(stream, role, config, prefix)
+            return fromRawStream(stream, role, config, prefix, deflate)
         }
 
         /** Start the connection's write driver on the caller's dispatcher. */

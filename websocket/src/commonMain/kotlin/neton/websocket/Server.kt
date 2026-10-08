@@ -62,8 +62,8 @@ suspend fun serverHandshake(
     limits: HandshakeLimits = HandshakeLimits(),
 ): WebSocketCore {
     val (request, tail) = readHead(stream, limits, TryParse(::tryParseRequest))
-    val reply = ServerHandshake(callback).reply(request, tail)
+    val reply = ServerHandshake(config?.compression, callback).reply(request, tail)
     writeAndFlush(stream, reply.bytes)
     reply.error?.let { throw it }
-    return WebSocketCore(Role.Server, config ?: WebSocketConfig())
+    return WebSocketCore(Role.Server, config ?: WebSocketConfig(), deflate = reply.deflate)
 }

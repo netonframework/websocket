@@ -147,13 +147,24 @@ fun interface Callback {
  * parsed request and the bytes read after it, [reply] decides the bytes to send and the outcome.
  */
 class ServerHandshake(private val callback: Callback = Callback.None) {
+    private var compression: neton.websocket.PerMessageDeflateConfig? = null
+
+    /**
+     * ⚖️ A handshake that accepts permessage-deflate under [compression] (negotiated before [callback], which sees
+     * and may change the answer; [Reply.deflate] reads the response sent).
+     */
+    constructor(compression: neton.websocket.PerMessageDeflateConfig?, callback: Callback = Callback.None) : this(callback) {
+        this.compression = compression
+    }
+
 
     /**
      * What to send back and how the handshake ends.
      * @property bytes the response to write and flush.
      * @property error when set, the handshake failed: throw it once [bytes] are flushed.
+     * @property deflate ⚖️ the permessage-deflate of the response sent, if any.
      */
-    class Reply(val bytes: ByteArray, val error: WebSocketException.Http?)
+    class Reply(val bytes: ByteArray, val error: WebSocketException.Http?, val deflate: neton.websocket.PerMessageDeflate? = null)
 
     /**
      * Process the request (`stage_finished` for `DoneReading`, `server.rs:242-289`): bytes after the
@@ -165,11 +176,15 @@ class ServerHandshake(private val callback: Callback = Callback.None) {
     fun reply(request: ServerRequest, tail: Bytes): Reply {
         if (!tail.isEmpty) protocolError(ProtocolError.JunkAfterRequest)
         val response = createResponse(request)
+        compression?.let { neton.websocket.negotiatePerMessageDeflate(request, response, it) }
         val out = Buffer(256)
         return when (val decision = callback.onRequest(request, response)) {
             is CallbackResult.Accept -> {
                 writeResponse(out, decision.response)
-                Reply(out.readAll(), null)
+                val deflate = neton.websocket.PerMessageDeflate.fromResponse(
+                    decision.response, neton.websocket.Role.Server, compression ?: neton.websocket.PerMessageDeflateConfig(),
+                )
+                Reply(out.readAll(), null, deflate)
             }
             is CallbackResult.Reject -> {
                 val resp = decision.response

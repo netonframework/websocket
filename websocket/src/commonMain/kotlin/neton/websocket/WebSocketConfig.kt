@@ -21,6 +21,8 @@ enum class Role { Server, Client }
  * @property sendCloseOnProtocolError when reading fails with a protocol, UTF-8 or size error, queue
  *   a close frame with 1002 / 1007 / 1009 before the error is reported (SPEC §5; default off, like
  *   the reference, which never sends one).
+ * @property compression ⚖️ permessage-deflate (RFC 7692) to offer (client) or accept (server); null, the default,
+ *   is off (the reference has none). See [PerMessageDeflateConfig].
  * @throws IllegalArgumentException if [maxWriteBufferSize] <= [writeBufferSize] (the reference panics).
  */
 data class WebSocketConfig(
@@ -31,6 +33,7 @@ data class WebSocketConfig(
     val maxFrameSize: Int? = DEFAULT_MAX_FRAME_SIZE,
     val acceptUnmaskedFrames: Boolean = false,
     val sendCloseOnProtocolError: Boolean = false,
+    val compression: PerMessageDeflateConfig? = null,
 ) {
     init {
         require(readBufferSize >= 0) { "readBufferSize must not be negative" }

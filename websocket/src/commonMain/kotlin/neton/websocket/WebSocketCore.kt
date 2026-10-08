@@ -71,11 +71,14 @@ enum class WebSocketState {
  * Not thread-safe: use it from one thread (one reactor) at a time.
  *
  * @param prefix bytes read past the handshake, parsed first (`from_partially_read`).
+ * @param deflate ⚖️ permessage-deflate as negotiated by the handshake (RFC 7692; [PerMessageDeflate]); null for none.
+ *   Its native compression state is released when the connection terminates.
  */
 class WebSocketCore(
     val role: Role,
     config: WebSocketConfig = WebSocketConfig(),
     prefix: Bytes? = null,
+    val deflate: PerMessageDeflate? = null,
 ) {
     /** Current configuration; change it with [setConfig]. */
     var config: WebSocketConfig = config
@@ -83,6 +86,8 @@ class WebSocketCore(
 
     private val codec = FrameCodec(config.readBufferSize, prefix)
     private val masks: MaskSource? = if (role == Role.Client) MaskSource() else null
+    private var deflater: RawDeflater? = null
+    private var inflater: RawInflater? = null
 
     /** Connection state. */
     var state: WebSocketState = WebSocketState.Active
@@ -161,7 +166,7 @@ class WebSocketCore(
             while (true) {
                 // Server: once the close handshake is done and everything went out, it is over.
                 if (replyOp == 0 && role == Role.Server && !state.canRead && allWritten) {
-                    state = WebSocketState.Terminated
+                    terminated()
                     throw WebSocketException.ConnectionClosed()
                 }
                 val m = readMessageFrame()
@@ -190,7 +195,7 @@ class WebSocketCore(
     private fun needMore(): Message? {
         if (inputEof) {
             val prev = state
-            state = WebSocketState.Terminated
+            terminated()
             if (prev == WebSocketState.ClosedByPeer || prev == WebSocketState.CloseAcknowledged) {
                 throw WebSocketException.ConnectionClosed()
             }
@@ -250,7 +255,9 @@ class WebSocketCore(
             }
         }
         if (!state.canRead) fail(len, ProtocolError.ReceivedAfterClosing)
-        if (h.rsvBits != 0) fail(len, ProtocolError.NonZeroReservedBits)
+        // ⚖️ RSV1 marks a compressed message: only on its first frame, only with permessage-deflate (RFC 7692 §6).
+        val compressed = h.rsvBits == 0x40 && deflate != null && (h.opcode == OP_TEXT || h.opcode == OP_BINARY)
+        if (h.rsvBits != 0 && !compressed) fail(len, ProtocolError.NonZeroReservedBits)
         // A client MUST close a connection if it detects a masked frame (RFC 6455 §5.1).
         if (role == Role.Client && masked) fail(len, ProtocolError.MaskedFrameFromServer)
 
@@ -276,13 +283,23 @@ class WebSocketCore(
         when (op) {
             OP_CONTINUE -> {
                 if (inc == null) fail(len, ProtocolError.UnexpectedContinueFrame)
-                try { inc.extend(a, off, len, config.maxMessageSize) } finally { input.skip(len) }
+                try {
+                    if (inc.compressed) inflateInto(inc, a, off, len, fin) else inc.extend(a, off, len, config.maxMessageSize)
+                } finally { input.skip(len) }
                 if (!fin) return null
                 incomplete = null
                 return inc.complete()
             }
             OP_TEXT, OP_BINARY -> {
                 if (inc != null) fail(len, ProtocolError.ExpectedFragment(OpCode.from(op) as OpCode.Data))
+                if (compressed) {
+                    // Inflated as it arrives, through the message's size limit and UTF-8 check (a decompression
+                    // bomb stops at the limit).
+                    val m = IncompleteMessage(op == OP_TEXT).also { it.compressed = true }
+                    try { inflateInto(m, a, off, len, fin) } finally { input.skip(len) }
+                    if (!fin) { incomplete = m; return null }
+                    return m.complete()
+                }
                 if (!fin) {
                     val m = IncompleteMessage(op == OP_TEXT)
                     try { m.extend(a, off, len, config.maxMessageSize) } finally { input.skip(len) }
@@ -300,6 +317,22 @@ class WebSocketCore(
                 return Message.Text(Utf8Bytes.unchecked(takePayload(input, len)))
             }
             else -> fail(len, ProtocolError.UnknownDataFrameType(op))
+        }
+    }
+
+    /**
+     * Inflate one frame of a compressed message into [m]; after its last frame the sync flush's `00 00 ff ff` the
+     * sender removed (RFC 7692 §7.2.2), then a reset when the peer uses no context takeover.
+     */
+    private fun inflateInto(m: IncompleteMessage, a: ByteArray, off: Int, len: Int, last: Boolean) {
+        val d = deflate!!
+        val inf = inflater ?: rawInflater(d.decompressWindowBits).also { inflater = it }
+        val max = config.maxMessageSize
+        val sink: (ByteArray, Int, Int) -> Unit = { b, o, n -> m.extend(b, o, n, max) }
+        inf.inflate(a, off, len, sink)
+        if (last) {
+            inf.inflate(DEFLATE_TAIL, 0, DEFLATE_TAIL.size, sink)
+            if (d.decompressNoContextTakeover) inf.reset()
         }
     }
 
@@ -437,7 +470,7 @@ class WebSocketCore(
      */
     fun flushed() {
         if (role == Role.Server && !state.canRead && replyOp == 0 && allWritten) {
-            state = WebSocketState.Terminated
+            terminated()
             throw WebSocketException.ConnectionClosed()
         }
     }
@@ -466,7 +499,14 @@ class WebSocketCore(
         if (isConnectionReset && !state.canRead) WebSocketException.ConnectionClosed() else WebSocketException.Io(cause)
 
     /** The driver gave up on the connection (stream error, cancelled write): later calls fail with AlreadyClosed. */
-    fun terminate() { state = WebSocketState.Terminated }
+    fun terminate() = terminated()
+
+    /** The connection is over: no more reads or writes, and the compression state goes. */
+    private fun terminated() {
+        state = WebSocketState.Terminated
+        deflater?.release(); deflater = null
+        inflater?.release(); inflater = null
+    }
 
     private fun checkNotTerminated() {
         if (state == WebSocketState.Terminated) throw WebSocketException.AlreadyClosed()
@@ -491,7 +531,16 @@ class WebSocketCore(
 
     private fun bufferData(op: Int, payload: Bytes): Boolean {
         checkMessageSize(payload.size)
-        return bufferFrame(0x80 or op, payload, null)
+        val d = deflate ?: return bufferFrame(0x80 or op, payload, null)
+        // ⚖️ permessage-deflate: one compressed frame with RSV1 (RFC 7692 §6). Checked against the compressed size's
+        // bound first: a message that does not fit must leave the compressor untouched, as it is queued again later.
+        val bound = deflateBound(payload.size)
+        if (!codec.fits(headerSize(bound.toLong(), masks != null) + bound)) return false
+        val def = deflater ?: rawDeflater(d.level, d.compressWindowBits).also { deflater = it }
+        val out = ByteArray(bound)
+        val n = def.compress(payload.toByteArray(), 0, payload.size, out, 0)
+        if (d.compressNoContextTakeover) def.reset()
+        return bufferFrame(0x80 or 0x40 or op, Bytes.copyOf(out, 0, n), null)
     }
 
     /**

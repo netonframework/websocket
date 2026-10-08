@@ -154,6 +154,11 @@ suspend fun clientHandshake(
     config: WebSocketConfig? = null,
     limits: HandshakeLimits = HandshakeLimits(),
 ): ClientHandshakeResult {
+    val compression = config?.compression
+    // ⚖️ permessage-deflate: offered unless the request already carries extensions of the caller's own.
+    if (compression != null && request.headers["Sec-WebSocket-Extensions"] == null) {
+        request.headers.append("Sec-WebSocket-Extensions", HeaderValue.fromStatic(compression.offer()))
+    }
     val handshake = ClientHandshake.start(request)
     writeAndFlush(stream, handshake.request)
     val (response, tail) = readHead(stream, limits, TryParse(::tryParseResponse))
@@ -163,7 +168,8 @@ suspend fun clientHandshake(
         e.response.body = tail.toByteArray()
         throw e
     }
-    val core = WebSocketCore(Role.Client, config ?: WebSocketConfig(), tail.takeUnless { it.isEmpty })
+    val deflate = PerMessageDeflate.fromResponse(verified, Role.Client, compression ?: PerMessageDeflateConfig())
+    val core = WebSocketCore(Role.Client, config ?: WebSocketConfig(), tail.takeUnless { it.isEmpty }, deflate)
     return ClientHandshakeResult(stream, core, verified, tail)
 }
 

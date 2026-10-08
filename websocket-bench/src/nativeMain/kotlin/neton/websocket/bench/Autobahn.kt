@@ -1,8 +1,11 @@
 package neton.websocket.bench
 
+import kotlinx.cinterop.toKString
 import neton.io.net.runReactor
 import neton.io.net.serveTcp
 import neton.websocket.Message
+import neton.websocket.PerMessageDeflateConfig
+import neton.websocket.WebSocketConfig
 import neton.websocket.WebSocket
 import neton.websocket.WebSocketException
 import neton.websocket.accept
@@ -28,6 +31,13 @@ private suspend fun echo(ws: WebSocket) {
     }
 }
 
+/** permessage-deflate offered / accepted when NETON_WS_COMPRESSION=1 (Autobahn sections 12 and 13; SPEC §11.7). */
+@OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+private val config: WebSocketConfig? =
+    if (platform.posix.getenv("NETON_WS_COMPRESSION")?.toKString() == "1") {
+        WebSocketConfig(compression = PerMessageDeflateConfig())
+    } else null
+
 /** tungstenite `examples/autobahn-server.rs`: an echo server for the fuzzing client. Arguments: host port. */
 fun autobahnServerMain(args: Array<String>) {
     val host = args.getOrElse(0) { "127.0.0.1" }
@@ -35,7 +45,7 @@ fun autobahnServerMain(args: Array<String>) {
     neton.io.net.GcTuning.fromEnvironment()     // the application's choice (NETON_IO_GC_MIN_HEAP_MB, NETON_IO_GC_THREAD_NICE)
     println("autobahnServer on $host:$port")
     serveTcp(host, port, reactors = 1, shutdownOnSignals = true) { stream ->
-        val ws = try { accept(stream) } catch (e: Exception) { println("handshake: $e"); stream.close(); return@serveTcp }
+        val ws = try { accept(stream, config) } catch (e: Exception) { println("handshake: $e"); stream.close(); return@serveTcp }
         echo(ws)
     }
 }
@@ -50,7 +60,7 @@ fun autobahnClientMain(args: Array<String>) = runReactor {
     println("autobahnClient: $total cases")
     for (case in 1..total) {
         try {
-            val (ws, _) = connect("$base/runCase?case=$case&agent=$agent")
+            val (ws, _) = connect("$base/runCase?case=$case&agent=$agent", config = config)
             echo(ws)
         } catch (e: Exception) {
             println("case $case: $e")
