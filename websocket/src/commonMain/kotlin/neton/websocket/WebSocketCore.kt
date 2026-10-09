@@ -97,6 +97,18 @@ class WebSocketCore(
     private var inputEof = false
     private var blocked = false
 
+    /** Nonblocking admission before reserving a data frame payload. Unsupported with compression. */
+    fun setInboundAdmission(beforePayload: (Int) -> Unit) {
+        check(deflate == null) { "Compressed admission requires a decompressed-byte budget" }
+        codec.beforeDataPayload = beforePayload
+    }
+
+    /** Closing mode: drain data payloads without materializing messages, retaining control handling. */
+    fun discardData() {
+        incomplete = null
+        codec.discardData = true
+    }
+
     // The reply slot (tungstenite `additional_send`): opcode 0 when empty, else OP_PONG / OP_CLOSE.
     private var replyOp = 0
     private var replyPayload: Bytes = Bytes.EMPTY
@@ -236,6 +248,14 @@ class WebSocketCore(
         if (!c.pollHeader(config.maxFrameSize)) return needMore()
         val h = c.header
         if (h.isControl && h.length > 125) failOversizedControl()
+        if (c.discardData && !h.isControl) {
+            val skip = minOf(c.input.readableBytes.toLong(), h.length).toInt()
+            c.input.skip(skip)
+            h.length -= skip
+            if (h.length > 0) return needMore()
+            c.hasHeader = false
+            return null
+        }
         if (!c.payloadReady()) return needMore()
         c.hasHeader = false
 
@@ -577,4 +597,3 @@ internal fun takePayload(input: neton.io.bytes.Buffer, len: Int): Bytes {
     input.skip(len)
     return out
 }
-

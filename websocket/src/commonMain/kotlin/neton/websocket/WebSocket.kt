@@ -72,6 +72,12 @@ class WebSocket private constructor(
     /** The configuration (tungstenite `get_config`). */
     val config: WebSocketConfig get() = core.config
 
+    /** Executor-confined, nonblocking callback; throw to reject before payload allocation. */
+    fun setInboundAdmission(beforePayload: (Int) -> Unit) = core.setInboundAdmission(beforePayload)
+
+    /** Switch permanently to bounded data draining while completing a closing handshake. */
+    fun discardData() = core.discardData()
+
     /** Replace the configuration (tungstenite `set_config`); see [WebSocketCore.setConfig]. */
     fun setConfig(transform: (WebSocketConfig) -> WebSocketConfig) {
         core.setConfig(transform)

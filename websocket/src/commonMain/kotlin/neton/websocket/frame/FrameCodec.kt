@@ -39,6 +39,8 @@ internal class FrameCodec(readBufferSize: Int, prefix: Bytes?) {
     /** The header of the frame being read, valid while [hasHeader]. */
     val header = RawHeader()
     var hasHeader = false
+    var beforeDataPayload: ((Int) -> Unit)? = null
+    var discardData = false
 
     init { if (prefix != null) input.writeBytes(prefix) }
 
@@ -58,8 +60,9 @@ internal class FrameCodec(readBufferSize: Int, prefix: Bytes?) {
         if (header.length > max) {
             throw WebSocketException.Capacity(CapacityError.MessageTooLong(header.length, max.toLong()))
         }
+        if (!header.isControl && !discardData) beforeDataPayload?.invoke(header.length.toInt())
         val missing = header.length.toInt() - input.readableBytes
-        if (missing > 0) input.reserve(missing)
+        if (missing > 0 && (!discardData || header.isControl)) input.reserve(missing)
         return true
     }
 
