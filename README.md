@@ -11,7 +11,7 @@ Specification, every deliberate difference from the reference (marked ⚖️), a
 
 Release coordinate: `com.netonstream:websocket:0.2.0`, built against `com.netonstream:io:0.3.2` and `com.netonstream:http:0.2.0`.
 0.2.0 adds permessage-deflate (RFC 7692, off by default).
-Kotlin 2.4.0, native targets only.
+Kotlin 2.4.20 (the build refuses anything lower), native targets only.
 
 - **Frames and messages:** masking, fragmentation, UTF-8 validation of text messages (incremental), control frames,
   and the close handshake.
