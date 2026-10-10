@@ -30,12 +30,17 @@ else
   batches=("1.*,2.*,3.*,4.*,5.*,6.*,7.*,8.*,9.*,10.*,11.*")
   for s in 12.1 12.2 12.3 12.4 12.5 13.1 13.2 13.3 13.4 13.5 13.6 13.7; do batches+=("$s.*"); done
 fi
-# Peak resident memory (KiB) of the fuzzing client while process $1 runs.
+# Peak resident memory (KiB) of the fuzzing client while process $1 runs. A guard: container $2 is killed once it holds
+# more than 12 GiB or has run 20 minutes (a stuck or thrashing runner otherwise ends the job with no evidence).
 peak_rss() {
-  local max=0 r
+  local max=0 r start=$SECONDS
   while kill -0 "$1" 2>/dev/null; do
     r=$(ps -eo rss=,args= | awk '/wstest -m fuzzingclient/ && !/awk/ { s += $1 } END { print s + 0 }')
     [ "$r" -gt "$max" ] && max=$r
+    if [ "$r" -gt $((12 * 1024 * 1024)) ] || [ $((SECONDS - start)) -gt 1200 ]; then
+      echo "guard: stopping $2 at $((r / 1024)) MiB after $((SECONDS - start)) s" >&2
+      $engine kill "$2" > /dev/null 2>&1
+    fi
     sleep 2
   done
   echo "$max"
@@ -50,9 +55,9 @@ d = json.load(open("config/fuzzingclient.json"))
 d["cases"] = [c for c in sys.argv[1].split(",") if c]; d["outdir"] = "./reports/server-%s" % sys.argv[2]
 json.dump(d, open("config/fuzzingclient-batch.json", "w"))
 PY
-  $engine run --rm --network host -v $PWD/config:/config:Z -v $PWD/reports:/reports:Z $image \
+  $engine run --rm --name autobahn-fuzz-$n --network host -v $PWD/config:/config:Z -v $PWD/reports:/reports:Z $image \
     wstest -m fuzzingclient -s /config/fuzzingclient-batch.json >> fuzz-server.log 2>&1 & fuzz=$!
-  peak=$(peak_rss $fuzz)
+  peak=$(peak_rss $fuzz autobahn-fuzz-$n)
   wait $fuzz; s=$?
   echo "fuzzing client batch $n ($b): status $s, peak RSS $((peak / 1024)) MiB"
   [ "$s" != 0 ] && status=$s
