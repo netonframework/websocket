@@ -29,6 +29,13 @@ sealed class WebSocketException(message: String, cause: Throwable? = null) : Exc
     /** Error of the underlying stream. */
     class Io(cause: Throwable) : WebSocketException("IO error: ${cause.message}", cause)
 
+    /**
+     * ⚖️ A time limit ran out (the reference has none, SPEC §11.8): [what] is "handshake"
+     * ([neton.websocket.handshake.HandshakeLimits.timeoutMillis]), "closing handshake" ([WebSocketConfig.closeTimeoutMillis])
+     * or "idle" ([WebSocketConfig.idleTimeoutMillis]). The connection is over.
+     */
+    class Timeout(val what: String, val millis: Long) : WebSocketException("$what not completed within $millis ms")
+
     /** A size limit was exceeded. */
     class Capacity(val error: CapacityError) : WebSocketException("Space limit exceeded: $error")
 

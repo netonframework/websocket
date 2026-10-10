@@ -6,6 +6,7 @@ import neton.websocket.handshake.HandshakeLimits
 import neton.websocket.handshake.ServerHandshake
 import neton.websocket.handshake.TryParse
 import neton.websocket.handshake.tryParseRequest
+import neton.websocket.handshake.withinHandshakeLimit
 
 // Server entry points (tungstenite `T/src/server.rs`, tokio-tungstenite `accept_async*`; SPEC §3.3, §6).
 //
@@ -60,10 +61,10 @@ suspend fun serverHandshake(
     callback: Callback = Callback.None,
     config: WebSocketConfig? = null,
     limits: HandshakeLimits = HandshakeLimits(),
-): WebSocketCore {
+): WebSocketCore = withinHandshakeLimit(limits) {
     val (request, tail) = readHead(stream, limits, TryParse(::tryParseRequest))
     val reply = ServerHandshake(config?.compression, callback).reply(request, tail)
     writeAndFlush(stream, reply.bytes)
     reply.error?.let { throw it }
-    return WebSocketCore(Role.Server, config ?: WebSocketConfig(), deflate = reply.deflate)
+    WebSocketCore(Role.Server, config ?: WebSocketConfig(), deflate = reply.deflate)
 }

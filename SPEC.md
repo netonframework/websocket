@@ -416,3 +416,16 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
   `DriverIntegrationTest.testNoSendAfterCloseTcp` 失败：对端断开后 IOCP 的读以 WSAECONNABORTED 结束，io 0.3.0 只把 WSAECONNRESET 算作连接重置。
   已在 io 修正（main b9a425e），需随 io 的下一个版本生效。
 
+### 11.8 时间上限：握手、关闭握手、空闲（2026-10-11）⚖️
+- **缺口**：参考（tungstenite）没有任何时间上限：连上后不发请求的客户端、不回响应的服务端、收到 Close 后既不回应也不断开 TCP 的对端，
+  都让连接一直挂着。stack 工程标准 §7.2 要求资源有界。
+- **握手**：`HandshakeLimits(timeoutMillis = 10_000)`，`serverHandshake` / `clientHandshake`（以及基于它们的 `accept*`、`client*`、`connect*`）
+  整个握手在时限内完成，否则 `WebSocketException.Timeout("handshake", ms)`；0 不设限。失败时流的归属不变（服务端：调用方保留流）。
+- **关闭握手**：`WebSocketConfig(closeTimeoutMillis = 10_000)`：从第一个发出或收到的 Close 帧起，连接在时限内结束，对端不回应或不断开
+  TCP 时以 `WebSocketException.Timeout("closing handshake", ms)` 结束；0 不设限。计时器在连接的调度器上，连接结束时取消。
+- **空闲**：`WebSocketConfig(idleTimeoutMillis = 0)`：大于 0 时，超过该时长没有读或写即以 `Timeout("idle", ms)` 结束；默认关闭（保活 ping 属于应用）。
+- 新增的默认值（握手 10 s、关闭握手 10 s）是行为变化，发版按次版本处理；新字段在末尾、带默认值，源码兼容。
+- **测试**（`TimeoutTest`）：不发请求的客户端 → 服务端 200 ms 放弃；不回应的服务端 → 客户端 200 ms 放弃；不回应 Close 的对端 → 200 ms 后
+  以 Timeout 结束；正常完成的关闭握手不受影响；每 100 ms 一条消息保持连接、随后静默 300 ms 以 idle 结束（共收到 10 条）；默认值。去掉关闭
+  时限后对应测试挂到外层 20 s 超时、失败。macOS 全量 261 个通过。
+

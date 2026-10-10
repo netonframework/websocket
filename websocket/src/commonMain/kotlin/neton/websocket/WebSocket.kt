@@ -117,6 +117,16 @@ class WebSocket private constructor(
     private var endSeen = false
     private var driver: Job? = null
 
+    /** Where the timers run: the connection's dispatcher, with their own Job (as the driver). */
+    private var timers: CoroutineScope? = null
+
+    /** The closing-handshake limit, once started ([watchClosing]), and the idle watch ([watchIdle]). */
+    private var closeWatch: Job? = null
+    private var idleWatch: Job? = null
+
+    /** The last read or write, for [WebSocketConfig.idleTimeoutMillis]. */
+    private var lastActivity = kotlin.time.TimeSource.Monotonic.markNow()
+
     // ------------------------------------------------------------------------------------------
     // Reading
     // ------------------------------------------------------------------------------------------
@@ -168,10 +178,13 @@ class WebSocket private constructor(
             }
             // An automatic reply was queued: the driver writes it; this side never waits for that.
             if (core.hasReplyToFlush) driverSignal.signal()
-            if (message != null) return message
+            if (message != null) {
+                if (message is Message.Close) watchClosing()
+                return message
+            }
             if (core.needsReadYield) { kotlinx.coroutines.yield(); continue }
             val n = try {
-                stream.read(core.input)
+                stream.read(core.input).also { if (it > 0) lastActivity = kotlin.time.TimeSource.Monotonic.markNow() }
             } catch (e: IoException) {
                 // Closed under us because the connection ended (the driver, abort): report that.
                 if (!ended) {
@@ -262,7 +275,38 @@ class WebSocket private constructor(
     suspend fun close(frame: CloseFrame? = null) = writeOp {
         checkOpen()
         core.close(frame)
+        watchClosing()
         flushQueued()
+    }
+
+    /**
+     * ⚖️ Bound the closing handshake ([WebSocketConfig.closeTimeoutMillis]; the reference has no limit): from the first
+     * close frame sent or received, the connection ends within the limit even if the peer never answers or never
+     * closes TCP, and then fails with [WebSocketException.Timeout] (SPEC §11.8).
+     */
+    private fun watchClosing() {
+        val ms = config.closeTimeoutMillis
+        if (ms == 0L || closeWatch != null || ended) return
+        closeWatch = timers?.launch {
+            kotlinx.coroutines.delay(ms)
+            end(WebSocketException.Timeout("closing handshake", ms))
+        }
+    }
+
+    /** ⚖️ [WebSocketConfig.idleTimeoutMillis]: fail the connection after that long without a read or a write. */
+    private fun watchIdle() {
+        val ms = config.idleTimeoutMillis
+        if (ms == 0L) return
+        idleWatch = timers?.launch {
+            while (!ended) {
+                val left = ms - lastActivity.elapsedNow().inWholeMilliseconds
+                if (left <= 0) {
+                    end(WebSocketException.Timeout("idle", ms))
+                    return@launch
+                }
+                kotlinx.coroutines.delay(left)
+            }
+        }
     }
 
     private suspend fun queue(message: Message) {
@@ -275,7 +319,12 @@ class WebSocket private constructor(
             driverSignal.signal()
             writerSignal.await()
         }
-        if (message is Message.Close) requestFlush() else if (core.wantsWrite) driverSignal.signal()
+        if (message is Message.Close) {
+            watchClosing()
+            requestFlush()
+        } else if (core.wantsWrite) {
+            driverSignal.signal()
+        }
     }
 
     private suspend fun flushQueued() {
@@ -340,6 +389,7 @@ class WebSocket private constructor(
                 if (!core.output.isEmpty) {
                     writeBuffer = core.takeOutput(writeBuffer)
                     stream.write(writeBuffer)
+                    lastActivity = kotlin.time.TimeSource.Monotonic.markNow()
                     core.outputWritten()
                     writerSignal.signal()
                 }
@@ -382,6 +432,8 @@ class WebSocket private constructor(
         core.terminate()
         stream.close()
         driver?.cancel()
+        closeWatch?.cancel()
+        idleWatch?.cancel()
         core.output.clear()
         core.output.releaseIfIdle()
         writerSignal.signal()
@@ -442,6 +494,8 @@ class WebSocket private constructor(
             val dispatcher = currentCoroutineContext()[ContinuationInterceptor] ?: Dispatchers.Unconfined
             // Its own Job: the driver lives as long as the connection, not as the creating coroutine.
             ws.driver = CoroutineScope(dispatcher + Job()).launch(start = CoroutineStart.UNDISPATCHED) { ws.drive() }
+            ws.timers = CoroutineScope(dispatcher + Job())
+            ws.watchIdle()
             return ws
         }
     }

@@ -58,9 +58,26 @@ data class HandshakeLimits(
     val maxPackets: Int = 512,
     val minPacketSize: Int = 128,
     val minPacketCheckThreshold: Int = 64,
+    /**
+     * ⚖️ The whole handshake (request and response) within this long, else [neton.websocket.WebSocketException.Timeout]
+     * ("handshake"); 0: no limit, as the reference. Default 10 s (SPEC §11.8).
+     */
+    val timeoutMillis: Long = 10_000,
 ) {
     init {
-        require(maxBytes > 0 && maxPackets > 0 && minPacketSize >= 0 && minPacketCheckThreshold >= 0) { "invalid handshake limits: $this" }
+        require(maxBytes > 0 && maxPackets > 0 && minPacketSize >= 0 && minPacketCheckThreshold >= 0 && timeoutMillis >= 0) {
+            "invalid handshake limits: $this"
+        }
+    }
+}
+
+/** Run a handshake under [HandshakeLimits.timeoutMillis]. */
+internal suspend fun <T> withinHandshakeLimit(limits: HandshakeLimits, block: suspend () -> T): T {
+    if (limits.timeoutMillis == 0L) return block()
+    return try {
+        kotlinx.coroutines.withTimeout(limits.timeoutMillis) { block() }
+    } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+        throw neton.websocket.WebSocketException.Timeout("handshake", limits.timeoutMillis)
     }
 }
 

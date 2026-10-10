@@ -23,6 +23,11 @@ enum class Role { Server, Client }
  *   the reference, which never sends one).
  * @property compression ⚖️ permessage-deflate (RFC 7692) to offer (client) or accept (server); null, the default,
  *   is off (the reference has none). See [PerMessageDeflateConfig].
+ * @property closeTimeoutMillis ⚖️ once a close frame was sent or received, the connection ends within this long even
+ *   if the peer never completes the closing handshake (never answers, never closes TCP): it then fails with
+ *   [WebSocketException.Timeout]. 0: no limit, as the reference. Default 10 s (SPEC §11.8).
+ * @property idleTimeoutMillis ⚖️ the connection fails with [WebSocketException.Timeout] after this long without
+ *   reading or writing anything. 0, the default: no limit (keep-alive pings are the application's).
  * @throws IllegalArgumentException if [maxWriteBufferSize] <= [writeBufferSize] (the reference panics).
  */
 data class WebSocketConfig(
@@ -34,6 +39,8 @@ data class WebSocketConfig(
     val acceptUnmaskedFrames: Boolean = false,
     val sendCloseOnProtocolError: Boolean = false,
     val compression: PerMessageDeflateConfig? = null,
+    val closeTimeoutMillis: Long = DEFAULT_CLOSE_TIMEOUT_MILLIS,
+    val idleTimeoutMillis: Long = 0,
 ) {
     init {
         require(readBufferSize >= 0) { "readBufferSize must not be negative" }
@@ -43,6 +50,8 @@ data class WebSocketConfig(
         }
         require(maxMessageSize == null || maxMessageSize >= 0) { "maxMessageSize must not be negative" }
         require(maxFrameSize == null || maxFrameSize >= 0) { "maxFrameSize must not be negative" }
+        require(closeTimeoutMillis >= 0) { "closeTimeoutMillis must not be negative" }
+        require(idleTimeoutMillis >= 0) { "idleTimeoutMillis must not be negative" }
     }
 
     companion object {
@@ -50,6 +59,7 @@ data class WebSocketConfig(
         const val DEFAULT_WRITE_BUFFER_SIZE = 128 * 1024
         const val DEFAULT_MAX_MESSAGE_SIZE = 64 shl 20
         const val DEFAULT_MAX_FRAME_SIZE = 16 shl 20
+        const val DEFAULT_CLOSE_TIMEOUT_MILLIS: Long = 10_000
 
         /** ⚖️ The default [maxWriteBufferSize] for a given [writeBufferSize] (SPEC §4.4). */
         fun defaultMaxWriteBufferSize(writeBufferSize: Int): Int {

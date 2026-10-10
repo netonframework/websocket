@@ -16,6 +16,7 @@ import neton.websocket.handshake.ClientHandshake
 import neton.websocket.handshake.ClientRequest
 import neton.websocket.handshake.ClientResponse
 import neton.websocket.handshake.HandshakeLimits
+import neton.websocket.handshake.withinHandshakeLimit
 import neton.websocket.handshake.HeadReader
 import neton.websocket.handshake.TryParse
 import neton.websocket.handshake.generateKey
@@ -153,7 +154,7 @@ suspend fun clientHandshake(
     request: ClientRequest,
     config: WebSocketConfig? = null,
     limits: HandshakeLimits = HandshakeLimits(),
-): ClientHandshakeResult {
+): ClientHandshakeResult = withinHandshakeLimit(limits) {
     val compression = config?.compression
     // ⚖️ permessage-deflate: offered unless the request already carries extensions of the caller's own.
     if (compression != null && request.headers["Sec-WebSocket-Extensions"] == null) {
@@ -170,7 +171,7 @@ suspend fun clientHandshake(
     }
     val deflate = PerMessageDeflate.fromResponse(verified, Role.Client, compression ?: PerMessageDeflateConfig())
     val core = WebSocketCore(Role.Client, config ?: WebSocketConfig(), tail.takeUnless { it.isEmpty }, deflate)
-    return ClientHandshakeResult(stream, core, verified, tail)
+    ClientHandshakeResult(stream, core, verified, tail)
 }
 
 /** [clientHandshake] for a URL. */
