@@ -48,7 +48,8 @@ enum class WebSocketState {
  * 1. Append received bytes to [input] (e.g. `stream.read(core.input)`, at most [maxReadSize] at a
  *    time); at end of stream call [receivedEof].
  * 2. Call [read]: it returns the next [Message], or null when [input] holds no complete message
- *    yet (go to 1). It throws [WebSocketException.ConnectionClosed] when the connection has ended
+ *    yet (go to 1), except when [needsReadYield] is true: yield to other tasks and retry [read]
+ *    without waiting for network input. It throws [WebSocketException.ConnectionClosed] when the connection has ended
  *    normally, and other [WebSocketException]s when it failed.
  *
  * Writing:
@@ -96,6 +97,46 @@ class WebSocketCore(
     private var incomplete: IncompleteMessage? = null
     private var inputEof = false
     private var blocked = false
+    private var inboundPolicy = InboundDataPolicy.DELIVER
+    private var readingStarted = false
+    private var discardedOpcode = 0
+    private var discardedMessageBytes = 0L
+    private var discardedFrameOffset = 0
+    private val discardedUtf8 = Utf8Validator()
+    /** A driver must yield and retry read instead of waiting for network input. */
+    var needsReadYield: Boolean = false
+        private set
+
+    fun setInboundDataPolicy(policy: InboundDataPolicy) {
+        check(!readingStarted) { "Inbound policy must be selected before receiving" }
+        check(policy == InboundDataPolicy.DELIVER || deflate == null) { "Streaming discard does not support compression" }
+        inboundPolicy = policy
+        codec.streamData = policy != InboundDataPolicy.DELIVER
+        codec.beforeDataHeader = if (policy == InboundDataPolicy.DELIVER) null else ::prepareDiscardedFrame
+    }
+
+    private fun prepareDiscardedFrame() {
+        val h = codec.header
+        if (role == Role.Server && !h.masked && !config.acceptUnmaskedFrames) protocolError(ProtocolError.UnmaskedFrameFromClient)
+        if (role == Role.Client && h.masked) protocolError(ProtocolError.MaskedFrameFromServer)
+        if (!state.canRead) protocolError(ProtocolError.ReceivedAfterClosing)
+        if (h.rsvBits != 0) protocolError(ProtocolError.NonZeroReservedBits)
+        when (h.opcode) {
+            OP_CONTINUE -> if (discardedOpcode == 0) protocolError(ProtocolError.UnexpectedContinueFrame)
+            OP_TEXT, OP_BINARY -> {
+                if (discardedOpcode != 0) protocolError(ProtocolError.ExpectedFragment(OpCode.from(h.opcode) as OpCode.Data))
+                discardedOpcode = h.opcode
+                discardedMessageBytes = 0
+                discardedUtf8.reset()
+            }
+            else -> protocolError(ProtocolError.UnknownDataFrameType(h.opcode))
+        }
+        if (inboundPolicy == InboundDataPolicy.REJECT) throw InboundDataRejectedException()
+        discardedMessageBytes += h.length
+        val max = config.maxMessageSize ?: Int.MAX_VALUE
+        if (discardedMessageBytes > max) throw WebSocketException.Capacity(CapacityError.MessageTooLong(discardedMessageBytes, max.toLong()))
+        discardedFrameOffset = 0
+    }
 
     /** Nonblocking admission before reserving a data frame payload. Unsupported with compression. */
     fun setInboundAdmission(beforePayload: (Int) -> Unit) {
@@ -173,8 +214,11 @@ class WebSocketCore(
      *   close frame queued in the reply slot).
      */
     fun read(): Message? {
+        readingStarted = true
+        needsReadYield = false
         checkNotTerminated()
         try {
+            var turns = 0
             while (true) {
                 // Server: once the close handshake is done and everything went out, it is over.
                 if (replyOp == 0 && role == Role.Server && !state.canRead && allWritten) {
@@ -184,6 +228,9 @@ class WebSocketCore(
                 val m = readMessageFrame()
                 if (m != null) return m
                 if (blocked) { blocked = false; return null }
+                if (++turns >= 32 && (inboundPolicy != InboundDataPolicy.DELIVER || codec.discardData)) {
+                    needsReadYield = true; return null
+                }
             }
         } catch (e: WebSocketException) {
             if (config.sendCloseOnProtocolError && state == WebSocketState.Active) queueFailureClose(e)
@@ -249,11 +296,32 @@ class WebSocketCore(
         val h = c.header
         if (h.isControl && h.length > 125) failOversizedControl()
         if (c.discardData && !h.isControl) {
-            val skip = minOf(c.input.readableBytes.toLong(), h.length).toInt()
+            val skip = minOf(c.input.readableBytes.toLong(), h.length, 16384L).toInt()
             c.input.skip(skip)
             h.length -= skip
-            if (h.length > 0) return needMore()
+            if (h.length > 0) return if (c.input.isEmpty) needMore() else null
             c.hasHeader = false
+            return null
+        }
+        if (inboundPolicy == InboundDataPolicy.DISCARD && !h.isControl) {
+            val n = minOf(c.input.readableBytes.toLong(), h.length, 16384L).toInt()
+            val a = c.input.backingArray()
+            val off = c.input.readerIndex()
+            if (discardedOpcode == OP_TEXT) {
+                for (i in 0 until n) {
+                    val key = if (h.masked) h.mask ushr (24 - 8 * ((discardedFrameOffset + i) and 3)) else 0
+                    if (!discardedUtf8.feedByte(a[off + i].toInt() xor key)) throw WebSocketException.Utf8("Invalid discarded text")
+                }
+            }
+            c.input.skip(n)
+            discardedFrameOffset += n
+            h.length -= n
+            if (h.length > 0) return if (c.input.isEmpty) needMore() else null
+            c.hasHeader = false
+            if (h.isFinal) {
+                if (discardedOpcode == OP_TEXT && !discardedUtf8.isComplete) throw WebSocketException.Utf8("Incomplete discarded text")
+                discardedOpcode = 0
+            }
             return null
         }
         if (!c.payloadReady()) return needMore()

@@ -78,6 +78,8 @@ class WebSocket private constructor(
     /** Switch permanently to bounded data draining while completing a closing handshake. */
     fun discardData() = core.discardData()
 
+    fun setInboundDataPolicy(policy: InboundDataPolicy) = core.setInboundDataPolicy(policy)
+
     /** Replace the configuration (tungstenite `set_config`); see [WebSocketCore.setConfig]. */
     fun setConfig(transform: (WebSocketConfig) -> WebSocketConfig) {
         core.setConfig(transform)
@@ -167,6 +169,7 @@ class WebSocket private constructor(
             // An automatic reply was queued: the driver writes it; this side never waits for that.
             if (core.hasReplyToFlush) driverSignal.signal()
             if (message != null) return message
+            if (core.needsReadYield) { kotlinx.coroutines.yield(); continue }
             val n = try {
                 stream.read(core.input)
             } catch (e: IoException) {
