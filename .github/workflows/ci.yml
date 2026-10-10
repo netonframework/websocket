@@ -93,12 +93,14 @@ jobs:
           CONTAINER: docker
           NETON_WS_COMPRESSION: ${{ matrix.compression }}
           AUTOBAHN_CASES: ${{ matrix.cases }}
+          # Pinned: 25.10.1 (what :latest was in every run so far), by digest so a re-tag cannot change the suite.
+          AUTOBAHN_IMAGE: crossbario/autobahn-testsuite:25.10.1@sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074
         run: |
           mkdir -p ab && cp -r bench/autobahn/config ab/
           cp websocket-bench/build/bin/linuxX64/autobahnServerReleaseExecutable/autobahnServer.kexe ab/
           cp websocket-bench/build/bin/linuxX64/autobahnClientReleaseExecutable/autobahnClient.kexe ab/
-          docker pull -q crossbario/autobahn-testsuite
-          bash bench/autobahn/run.sh "$PWD/ab" crossbario/autobahn-testsuite | tee ab/summary.txt
+          docker pull -q "$AUTOBAHN_IMAGE"
+          bash bench/autobahn/run.sh "$PWD/ab" "$AUTOBAHN_IMAGE" | tee ab/summary.txt
           exit ${PIPESTATUS[0]}
       - name: Summary
         if: always()

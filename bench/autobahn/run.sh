@@ -21,7 +21,15 @@ fi
 env NETON_IO_DRIVER=${NETON_IO_DRIVER:-epoll} ./autobahnServer.kexe 127.0.0.1 9002 > server.log 2>&1 & server=$!
 sleep 1
 $engine run --rm --network host -v $PWD/config:/config:Z -v $PWD/reports:/reports:Z $image wstest -m fuzzingclient -s /config/fuzzingclient.json > fuzz-server.log 2>&1
-echo "fuzzing client exited with status $?"
+status=$?
+echo "fuzzing client exited with status $status"
+if [ "$status" != 0 ] || [ ! -f reports/server/index.json ]; then
+  # Evidence for an unexplained end (the 12.2.9 abort of run 37706619816): how the fuzzing client ended, the kernel's
+  # OOM or kill records, memory, and the last cases it started.
+  echo "fuzzing client log tail:"; tail -3 fuzz-server.log
+  (sudo -n dmesg 2>/dev/null || dmesg 2>/dev/null) | grep -i -E "oom|killed process|out of memory" | tail -5
+  free -m 2>/dev/null | head -2
+fi
 if kill -0 $server 2>/dev/null; then kill $server; else wait $server; echo "the server exited early with status $?"; tail -20 server.log; fi
 $engine run --rm --network host -v $PWD/config:/config:Z -v $PWD/reports:/reports:Z $image wstest -m fuzzingserver -s /config/fuzzingserver.json > fuzz-client.log 2>&1 & fuzz=$!
 sleep 6
