@@ -15,6 +15,7 @@ import neton.io.bytes.Buffer
 import neton.io.bytes.Bytes
 import neton.io.core.IoException
 import neton.io.core.IoStream
+import neton.io.core.StreamCapability
 import neton.websocket.frame.CloseFrame
 import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.resume
@@ -188,7 +189,7 @@ class WebSocket private constructor(
             } catch (e: IoException) {
                 // Closed under us because the connection ended (the driver, abort): report that.
                 if (!ended) {
-                    val mapped = core.mapIoError(e, isConnectionReset(e))
+                    val mapped = core.mapIoError(e)
                     end(mapped.takeUnless { it is WebSocketException.ConnectionClosed })
                 }
                 continue
@@ -402,6 +403,9 @@ class WebSocket private constructor(
                 }
             }
         } catch (_: WebSocketException.ConnectionClosed) {
+            // A server whose closing handshake is done closes the transport (RFC 6455 §7.1.1); ⚖️ cleanly, so a TLS
+            // peer sees close_notify rather than a truncation (the reference leaves that to whoever drops the stream).
+            if (StreamCapability.HalfClose in stream.capabilities) try { stream.shutdownOutput() } catch (_: IoException) {}
             end(null)
         } catch (e: IoException) {
             if (!ended) end(writeFailure(e))
@@ -560,6 +564,3 @@ private class Signal {
         }
     }
 }
-
-/** Whether [e] is the peer resetting the connection (`io::ErrorKind::ConnectionReset`). */
-internal expect fun isConnectionReset(e: IoException): Boolean

@@ -429,3 +429,19 @@ com.netonstream:io（IoStream、Buffer / Bytes、connect / listen、反应器）
   以 Timeout 结束；正常完成的关闭握手不受影响；每 100 ms 一条消息保持连接、随后静默 300 ms 以 idle 结束（共收到 10 条）；默认值。去掉关闭
   时限后对应测试挂到外层 20 s 超时、失败。macOS 全量 261 个通过。
 
+### 11.9 关闭握手之后的传输层结束：TLS close_notify（2026-10-11，缺陷，已修复）⚖️
+- **发现**：tls 仓库的 wss 跨层组合测试（websocket 经 TLS、TCP 与反应器，tls SPEC §10）中，关闭握手正常完成后客户端仍以
+  `WebSocketException.Io(TlsTruncatedException)` 结束，而不是正常结束。两处原因：
+  1. 服务端完成关闭握手后由 `end()` 直接 `stream.close()`——`TlsStream.close()` 是立即关闭、不发 close_notify，对端 TLS 看到截断。
+  2. 读侧沿用 tungstenite `check_connection_reset`：对端关闭帧到达后只有"连接重置"算正常结束，TLS 截断等其他读错误仍报 Io。
+- **修复**：
+  1. ⚖️ 写驱动在服务端关闭握手完成处（RFC 6455 §7.1.1：由服务端关闭底层连接）先 `shutdownOutput()`（仅当流声明 `HalfClose`；TLS 上即
+     close_notify，TCP 上即 FIN），再关闭。驱动本是唯一写者，不与其他写并发；对端不读导致挂起时由关闭时限（§11.8）兜底。参考把这一步
+     留给丢弃流的一方。
+  2. ⚖️ `mapIoError`：对端关闭帧到达后**任何**读错误都是正常结束，与写侧已有规则（`writeFailure`）对称——消息流已由关闭帧完整界定，
+     对端以重置还是不带 close_notify 的 TLS 结束传输不属于本协议的问题。`isConnectionReset`（expect/actual）因此不再需要，已删除。
+- **测试**：`WebSocketCoreTest.aReadErrorAfterPeerCloseIsNormal`（替代 `resetAfterPeerCloseIsNormal`）；tls-websocket
+  `CompositionTest.aServerEndsTheTlsStreamWithCloseNotify`（原始 TLS 客户端手工握手并发关闭帧，必须读到 EOF 而非截断；去掉修复 1 时以
+  `TlsTruncatedException` 失败）与 `aCloseReachesThePeerWithItsCode`（两处修复都去掉时失败）。均以 `--include-build ../websocket` 验证；
+  macOS 全量 261 个通过。
+

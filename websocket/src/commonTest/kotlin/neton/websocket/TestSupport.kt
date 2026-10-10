@@ -54,7 +54,7 @@ class SyncWebSocket(
         val n = try {
             stream.read(input.backingArray(), input.writerIndex(), room)
         } catch (e: ConnectionReset) {
-            throw core.mapIoError(e, isConnectionReset = true)
+            throw core.mapIoError(e)
         }
         if (n == 0) core.receivedEof() else input.commitWrite(n)
     }

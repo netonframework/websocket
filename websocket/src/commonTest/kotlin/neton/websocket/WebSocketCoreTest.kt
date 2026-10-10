@@ -183,13 +183,14 @@ class WebSocketCoreTest {
         assertProtocolError<ProtocolError.ResetWithoutClosingHandshake> { c2.read() }
     }
 
-    @Test fun resetAfterPeerCloseIsNormal() {
+    /** ⚖️ Once the peer's close frame arrived, any read error (a reset, TLS without close_notify) is the normal end. */
+    @Test fun aReadErrorAfterPeerCloseIsNormal() {
         val core = client()
-        assertIs<WebSocketException.Io>(core.mapIoError(RuntimeException("reset"), isConnectionReset = true))
+        assertIs<WebSocketException.Io>(core.mapIoError(RuntimeException("reset")))
         core.feed(fromServer(0x88))
         core.read()
-        assertIs<WebSocketException.ConnectionClosed>(core.mapIoError(RuntimeException("reset"), isConnectionReset = true))
-        assertIs<WebSocketException.Io>(core.mapIoError(RuntimeException("other"), isConnectionReset = false))
+        assertIs<WebSocketException.ConnectionClosed>(core.mapIoError(RuntimeException("reset")))
+        assertIs<WebSocketException.ConnectionClosed>(core.mapIoError(RuntimeException("truncated")))
     }
 
     @Test fun disallowedCloseCodeEchoedAsProtocolViolation() {

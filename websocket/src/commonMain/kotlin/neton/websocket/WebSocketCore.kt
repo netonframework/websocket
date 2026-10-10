@@ -67,7 +67,7 @@ enum class WebSocketState {
  * Termination (RFC 6455 §7.1.1, TIME_WAIT on the server): a server reports
  * [WebSocketException.ConnectionClosed] from [read] or [flushed] once the close handshake is over
  * and everything is written, and should then close the TCP connection; a client reports it when
- * the server closes the connection ([receivedEof], or a reset: [mapIoError]).
+ * the server closes the connection ([receivedEof], or a read error: [mapIoError]).
  *
  * Not thread-safe: use it from one thread (one reactor) at a time.
  *
@@ -583,8 +583,13 @@ class WebSocketCore(
      * `mod.rs:830-848`): a connection reset after the peer's close is a normal end
      * ([WebSocketException.ConnectionClosed]); anything else is [WebSocketException.Io].
      */
-    fun mapIoError(cause: Throwable, isConnectionReset: Boolean): WebSocketException =
-        if (isConnectionReset && !state.canRead) WebSocketException.ConnectionClosed() else WebSocketException.Io(cause)
+    /**
+     * The end a read error means (tungstenite `check_connection_reset`: a reset once the peer's close frame arrived is
+     * the normal end). ⚖️ Any read error then, as for writes (`WebSocket.writeFailure`): the messages are complete, and
+     * how the peer ends the transport (a reset, TLS without close_notify) is not this protocol's concern.
+     */
+    fun mapIoError(cause: Throwable): WebSocketException =
+        if (!state.canRead) WebSocketException.ConnectionClosed() else WebSocketException.Io(cause)
 
     /** The driver gave up on the connection (stream error, cancelled write): later calls fail with AlreadyClosed. */
     fun terminate() = terminated()
