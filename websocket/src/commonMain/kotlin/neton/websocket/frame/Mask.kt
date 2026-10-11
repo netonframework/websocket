@@ -1,11 +1,7 @@
-@file:OptIn(kotlin.experimental.ExperimentalNativeApi::class)
-
 package neton.websocket.frame
 
 import neton.io.core.secureRandom
 import kotlin.experimental.xor
-import kotlin.native.getLongAt
-import kotlin.native.setLongAt
 
 // Masking (RFC 6455 §5.3; tungstenite `T/src/protocol/frame/mask.rs`).
 //
@@ -31,7 +27,7 @@ internal fun applyMaskFallback(a: ByteArray, from: Int, to: Int, mask: Int) {
  * tail. Equivalence with [applyMaskFallback] is tested at every offset 0–7 and length 0–32.
  */
 internal fun applyMask(a: ByteArray, from: Int, to: Int, mask: Int) {
-    if (to - from < 16 || !Platform.isLittleEndian) { applyMaskFallback(a, from, to, mask); return }
+    if (to - from < 16 || !wordsAreLittleEndian) { applyMaskFallback(a, from, to, mask); return }
     var i = from
     while ((i and 7) != 0) { a[i] = a[i] xor maskByte(mask, (i - from) and 3); i++ }
     // Key byte for index i is ((i - from) & 3); in a little-endian word the lowest byte comes first.
@@ -39,7 +35,7 @@ internal fun applyMask(a: ByteArray, from: Int, to: Int, mask: Int) {
     val le = ((r ushr 24) and 0xFF) or ((r ushr 8) and 0xFF00) or ((r shl 8) and 0xFF0000) or (r shl 24)
     val w = (le.toLong() and 0xFFFFFFFFL) or (le.toLong() shl 32)
     val end = to - 8
-    while (i <= end) { a.setLongAt(i, a.getLongAt(i) xor w); i += 8 }
+    while (i <= end) { a.storeLongLe(i, a.loadLongLe(i) xor w); i += 8 }
     while (i < to) { a[i] = a[i] xor maskByte(mask, (i - from) and 3); i++ }
 }
 
@@ -70,3 +66,12 @@ internal class MaskSource {
             ((pool[p + 2].toInt() and 0xFF) shl 8) or (pool[p + 3].toInt() and 0xFF)
     }
 }
+
+/** The 8 bytes at [index] as a little-endian Long (native: one unaligned load; JVM: bytes the JIT combines). */
+internal expect fun ByteArray.loadLongLe(index: Int): Long
+
+/** Stores [value] little-endian at [index]. */
+internal expect fun ByteArray.storeLongLe(index: Int, value: Long)
+
+/** Whether [loadLongLe] / [storeLongLe] see the bytes in little-endian order (every target so far). */
+internal expect val wordsAreLittleEndian: Boolean

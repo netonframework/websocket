@@ -33,16 +33,23 @@ sealed class OpCode {
     }
 
     companion object {
-        private val TABLE: Array<OpCode> = Array(16) { i ->
-            when (i) {
-                0 -> Data.Continue
-                1 -> Data.Text
-                2 -> Data.Binary
-                in 3..7 -> Data.Reserved(i)
-                8 -> Control.Close
-                9 -> Control.Ping
-                10 -> Control.Pong
-                else -> Control.Reserved(i)
+        /**
+         * Built on first use, not with the companion: on the JVM the companion is initialized with [OpCode] itself,
+         * which happens while a subclass object (e.g. [Data.Continue]) is being initialized, so the table would read
+         * that object as null (Kotlin/Native initializes objects lazily and never saw it).
+         */
+        private object Table {
+            val values: Array<OpCode> = Array(16) { i ->
+                when (i) {
+                    0 -> Data.Continue
+                    1 -> Data.Text
+                    2 -> Data.Binary
+                    in 3..7 -> Data.Reserved(i)
+                    8 -> Control.Close
+                    9 -> Control.Ping
+                    10 -> Control.Pong
+                    else -> Control.Reserved(i)
+                }
             }
         }
 
@@ -52,7 +59,7 @@ sealed class OpCode {
          */
         fun from(code: Int): OpCode {
             require(code in 0..15) { "Bug: OpCode out of range: $code" }
-            return TABLE[code]
+            return Table.values[code]
         }
     }
 }

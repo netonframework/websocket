@@ -1,9 +1,7 @@
-@file:OptIn(kotlin.experimental.ExperimentalNativeApi::class)
-
 package neton.websocket
 
 import neton.io.bytes.Bytes
-import kotlin.native.getLongAt
+import neton.websocket.frame.loadLongLe
 
 /**
  * Incremental UTF-8 validation (RFC 3629) across any number of chunks, without decoding or
@@ -33,7 +31,7 @@ internal class Utf8Validator {
         while (i < to) {
             if (s == ACCEPT) {
                 // ASCII fast path, one word at a time.
-                while (i + 8 <= to && (a.getLongAt(i) and HIGH_BITS) == 0L) i += 8
+                while (i + 8 <= to && (a.loadLongLe(i) and HIGH_BITS) == 0L) i += 8
                 if (i >= to) break
                 val b = a[i].toInt()
                 if (b >= 0) { i++; continue }
