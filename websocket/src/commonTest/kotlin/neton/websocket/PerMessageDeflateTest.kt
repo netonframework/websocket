@@ -48,6 +48,7 @@ class PerMessageDeflateTest {
             var len = out[i + 1].toInt() and 0x7F
             var at = i + 2
             if (len == 126) { len = ((out[at].toInt() and 0xFF) shl 8) or (out[at + 1].toInt() and 0xFF); at += 2 }
+            else if (len == 127) { len = (0 until 8).fold(0L) { acc, k -> (acc shl 8) or (out[at + k].toLong() and 0xFF) }.toInt(); at += 8 }
             frames += first to out.copyOfRange(at, at + len)
             i = at + len
         }
@@ -164,6 +165,38 @@ class PerMessageDeflateTest {
                 }
             }
         }
+    }
+
+    /**
+     * Every window size the negotiation allows (9..15), with and without context takeover: consecutive messages that
+     * repeat each other (so a compressor with context would reach back across messages), each sent as a compressed
+     * message (RSV1 set) and read by a decompressor with exactly that window. On the JVM a window under 15 bits is sent
+     * as stored blocks, still RSV1 (DeflateCodec.jvm.kt); natively zlib compresses within the window.
+     */
+    @Test fun smallWindowsRoundTripAsCompressedMessages() {
+        val text = ByteArray(3000) { "the quick brown fox jumps over the lazy dog. "[it % 45].code.toByte() }
+        for (bits in 9..15) for (noCtx in listOf(false, true)) {
+            val s = server(params(compressNoContextTakeover = noCtx, compressBits = bits))
+            val c = client(params(decompressNoContextTakeover = noCtx, decompressBits = bits))
+            val messages = listOf(text, text, text.copyOfRange(100, 2900), ByteArray(70_000) { (it % 251).toByte() }, text)
+            for (m in messages) s.write(Message.binary(m))
+            val frames = s.sentFrames()
+            assertEquals(messages.size, frames.size)
+            for ((first, _) in frames) assertEquals(0xC2, first, "FIN + RSV1 + binary, window $bits, no context takeover $noCtx")
+            for ((_, payload) in frames) c.feed(frameBytes(payload))
+            for (m in messages) assertContentEquals(m, assertIs<Message.Binary>(c.read()).data.toByteArray(), "window $bits, no context takeover $noCtx")
+        }
+    }
+
+    /** An unmasked server frame FIN + RSV1 + binary carrying [payload] (lengths up to 64 KiB - 1 or 64-bit). */
+    private fun frameBytes(payload: ByteArray): ByteArray {
+        val header = when {
+            payload.size < 126 -> byteArrayOf(0xC2.toByte(), payload.size.toByte())
+            payload.size < 65536 -> byteArrayOf(0xC2.toByte(), 126, (payload.size shr 8).toByte(), payload.size.toByte())
+            else -> byteArrayOf(0xC2.toByte(), 127, 0, 0, 0, 0, (payload.size shr 24).toByte(), (payload.size shr 16).toByte(),
+                (payload.size shr 8).toByte(), payload.size.toByte())
+        }
+        return header + payload
     }
 
     @Test fun clientFramesAreMaskedAndRead() {
