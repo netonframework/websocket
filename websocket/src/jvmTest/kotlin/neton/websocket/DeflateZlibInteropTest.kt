@@ -62,7 +62,10 @@ class DeflateZlibInteropTest {
     private fun python(script: String, dir: File, bits: Int, noCtx: Boolean): String {
         val exe = listOf("python3", "python").firstOrNull { runCatching { ProcessBuilder(it, "--version").start().waitFor() == 0 }.getOrDefault(false) }
             ?: error("python3 is required for the independent zlib")
-        val p = ProcessBuilder(exe, "-I", "-c", script, dir.path, bits.toString(), if (noCtx) "1" else "0", messages.size.toString())
+        // The script goes through a file, not `-c`: on Windows ProcessBuilder does not escape the quotes inside an
+        // argument, so a script passed inline reaches Python with its string literals stripped.
+        val file = File(dir, "interop.py").apply { writeText(script) }
+        val p = ProcessBuilder(exe, "-I", file.path, dir.path, bits.toString(), if (noCtx) "1" else "0", messages.size.toString())
             .redirectErrorStream(true).start()
         val output = p.inputStream.bufferedReader().readText().trim()
         check(p.waitFor(60, TimeUnit.SECONDS)) { "python did not finish" }
